@@ -1,0 +1,185 @@
+"""
+Document loader module for the Real Estate AI Chatbot RAG system.
+Extracts page-by-page text and metadata from PDF files using PyMuPDF (fitz).
+"""
+
+import logging
+from pathlib import Path
+from typing import Any, Optional, Union
+
+try:
+    import fitz  
+except ImportError:
+    fitz = None
+
+logger = logging.getLogger(__name__)
+
+
+import re
+
+
+def extract_document_metadata(file_path: Union[str, Path], first_page_text: str = "") -> dict[str, Any]:
+    """
+    Dynamically infers document metadata (property_name, configuration, document_type)
+    from filename and text patterns without hardcoding specific property names.
+    """
+    path = Path(file_path)
+    stem = path.stem
+    lower_stem = stem.lower()
+    first_lines = [line.strip() for line in first_page_text.split("\n") if line.strip()][:3]
+
+    # 1. Dynamic Configuration extraction (e.g. 1BHK, 2BHK, 3BHK, 4BHK, Studio, Penthouse, Villa, Plot)
+    config_match = re.search(
+        r"\b([1-9]\s*BHK|[1-9]\s*RK|Studio|Penthouse|Villa|Duplex|Plot)\b",
+        f"{stem} {' '.join(first_lines)}",
+        re.IGNORECASE,
+    )
+    configuration = re.sub(r"\s+", "", config_match.group(1).upper()) if config_match else "general"
+
+    # 2. Dynamic Property Name extraction from delimiter or first heading
+    property_name = ""
+    parts = re.split(r"[-–—|]", stem)
+    if len(parts) > 1:
+        candidate = parts[-1].strip()
+        if not re.search(r"\b([1-9]\s*BHK|Script|Brochure|Floor\s*Plan)\b", candidate, re.I) and len(candidate) > 2:
+            property_name = candidate
+        else:
+            candidate = parts[0].strip()
+            if not re.search(r"\b([1-9]\s*BHK|Script|Brochure|Floor\s*Plan)\b", candidate, re.I) and len(candidate) > 2:
+                property_name = candidate
+
+    if not property_name and first_lines:
+        dash_split = re.split(r"[-–—|]", first_lines[0])
+        if len(dash_split) > 1 and len(dash_split[-1].strip()) > 2:
+            property_name = dash_split[-1].strip()
+        elif len(first_lines[0]) < 60:
+            property_name = first_lines[0]
+
+    if not property_name:
+        property_name = re.sub(r"[_\-]+", " ", stem).strip().title()
+
+    # 3. Dynamic Document Type detection
+    doc_type = "document"
+    for candidate_type in ("brochure", "script", "floor_plan", "specification", "pricing", "handbook"):
+        if candidate_type in lower_stem:
+            doc_type = candidate_type
+            break
+
+    return {
+        "property_name": property_name,
+        "configuration": configuration,
+        "document_type": doc_type,
+    }
+
+
+# Backward-compatibility alias
+def extract_property_and_config(filename: str, sample_text: str = "") -> tuple[str, str]:
+    meta = extract_document_metadata(filename, sample_text)
+    return meta["property_name"], meta["configuration"]
+
+
+def get_default_pdf_dir() -> Path:
+    """
+    Dynamically resolves the project's root 'pdf/' directory relative to this file.
+
+    Hierarchy:
+        <project_root>/
+            pdf/
+            backend/
+                app/
+                    rag/
+                        loader.py
+    """
+    return Path(__file__).resolve().parent.parent.parent.parent / "pdf"
+
+
+def load_pdf_documents(pdf_dir: Optional[Union[str, Path]] = None) -> list[dict[str, Any]]:
+    """
+    Loads and extracts text page-by-page from all PDF files in the target directory.
+
+    Args:
+        pdf_dir: Optional custom path to the directory containing PDF files.
+                 If omitted, dynamically resolves to the project's root 'pdf/' directory.
+
+    Returns:
+        List of dictionaries containing page-level content and metadata:
+        [
+            {
+                "source": "2BHK + 2T Model House Script - Casagrand Aquagrove.pdf",
+                "page": 1,
+                "text": "..."
+            },
+            ...
+        ]
+
+    """
+    if fitz is None:
+        raise ImportError(
+            "PyMuPDF is not installed. Please install it using: python -m pip install pymupdf"
+        )
+
+    target_dir = Path(pdf_dir).resolve() if pdf_dir else get_default_pdf_dir()
+
+    if not target_dir.exists():
+        logger.warning("PDF directory does not exist: %s", target_dir)
+        return []
+
+    if not target_dir.is_dir():
+        logger.warning("Specified PDF path is not a directory: %s", target_dir)
+        return []
+
+    pdf_files = sorted(target_dir.glob("*.pdf"))
+    if not pdf_files:
+        logger.warning("No PDF files found in directory: %s", target_dir)
+        return []
+
+    logger.info("Found %d PDF file(s) in %s", len(pdf_files), target_dir)
+    documents: list[dict[str, Any]] = []
+
+    for file_path in pdf_files:
+        logger.info("Processing PDF: %s", file_path.name)
+        try:
+            with fitz.open(file_path) as doc:
+                page_count = len(doc)
+                extracted_pages = 0
+
+                for page_idx in range(page_count):
+                    try:
+                        page = doc.load_page(page_idx)
+                        text = page.get_text("text").strip()
+
+                        # Skip empty or whitespace-only pages
+                        if not text:
+                            continue
+
+                        prop_name, config = extract_property_and_config(file_path.name, text)
+
+                        documents.append({
+                            "source": file_path.name,
+                            "page": page_idx + 1,  # 1-indexed human-readable numbering
+                            "text": text,
+                            "property_name": prop_name,
+                            "configuration": config,
+                        })
+                        extracted_pages += 1
+                    except Exception as page_err:
+                        logger.warning(
+                            "Error extracting page %d from '%s': %s",
+                            page_idx + 1,
+                            file_path.name,
+                            page_err,
+                        )
+
+                logger.info(
+                    "Extracted %d valid page(s) from '%s' (total pages in doc: %d)",
+                    extracted_pages,
+                    file_path.name,
+                    page_count,
+                )
+
+        except Exception as file_err:
+            logger.error("Failed to read PDF file '%s': %s", file_path.name, file_err)
+            continue
+
+    logger.info("Total extracted pages across all PDFs: %d", len(documents))
+    return documents
