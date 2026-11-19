@@ -1,5 +1,22 @@
 import { useState } from 'react'
 const API = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+
+export function sanitizeFilters(filters) {
+    if (!filters || typeof filters !== 'object') return undefined
+    const cleaned = {}
+    for (const [key, value] of Object.entries(filters)) {
+        if (value === '' || value === undefined || value === null) {
+            continue
+        }
+        if (['bhk', 'min_price', 'max_price'].includes(key)) {
+            const num = Number(value)
+            cleaned[key] = isNaN(num) ? value : num
+        } else {
+            cleaned[key] = value
+        }
+    }
+    return Object.keys(cleaned).length > 0 ? cleaned : undefined
+}
 export default function App() {
     const [provider, setProvider] = useState('openai'), [input, setInput] = useState('')
     const [messages, setMessages] = useState([{ role: 'assistant', content: 'Hello! Tell me your preferred location, budget and BHK.' }])

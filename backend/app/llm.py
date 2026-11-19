@@ -30,7 +30,7 @@ def conversation(history: list[dict[str, str]], current: str) -> list[dict[str, 
 
 
 def _normalize_extracted(data: dict[str, Any]) -> dict[str, Any]:
-    """Ensures intent matches SearchFilters literals and cleans types."""
+    """Ensures intent matches SearchFilters literals and cleans empty strings for optional fields."""
     raw_intent = str(data.get("intent", "property_search")).lower()
     if raw_intent in ("search", "find", "property_search", "buy", "rent"):
         data["intent"] = "property_search"
@@ -40,6 +40,17 @@ def _normalize_extracted(data: dict[str, Any]) -> dict[str, Any]:
         data["intent"] = "contact_request"
     else:
         data["intent"] = "property_search"
+
+    # Convert empty strings for optional numeric fields to None
+    for k in ("bhk", "min_price", "max_price"):
+        if k in data and (data[k] == "" or data[k] is None):
+            data[k] = None
+
+    # Convert empty strings for optional string fields to None
+    for k in ("location", "city", "property_type", "clarification_question"):
+        if k in data and isinstance(data[k], str) and not data[k].strip():
+            data[k] = None
+
     return data
 
 

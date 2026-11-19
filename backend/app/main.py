@@ -26,6 +26,12 @@ def chat(req: ChatRequest):
     try:
         history = [m.model_dump() for m in req.history]
         filters = understand(req.provider, history, req.message)
+        if req.filters:
+            explicit = req.filters.model_dump(exclude_unset=True, exclude_none=True)
+            if explicit:
+                merged = filters.model_dump()
+                merged.update(explicit)
+                filters = SearchFilters.model_validate(merged)
 
         # Check if query can be answered directly from property documentation (RAG)
         if filters.intent == "general_question" or filters.needs_clarification:
