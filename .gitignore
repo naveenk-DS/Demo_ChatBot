@@ -1,0 +1,26 @@
+# Secrets & credentials — NEVER commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+aws-credentials
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Node
+node_modules/
+dist/
+.next/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
