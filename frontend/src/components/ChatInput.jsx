@@ -38,7 +38,7 @@ export default function ChatInput({ input, setInput, onSend, isBusy }) {
                         value={input}
                         onChange={(e) => setInput(e.target.value)}
                         onKeyDown={handleKeyDown}
-                        placeholder="Ask anything about Casagrand Aquagrove specifications or search properties..."
+                        placeholder="Ask anything aboutspecifications or search properties now implementinng 2BHA and 3BHK doc only..."
                         disabled={isBusy}
                     />
 

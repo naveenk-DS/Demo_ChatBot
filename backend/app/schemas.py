@@ -2,13 +2,31 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
+UNSPECIFIED_SENTINELS = {
+    "",
+    "null",
+    "none",
+    "not specified",
+    "unspecified",
+    "not mentioned",
+    "n/a",
+    "na",
+    "any",
+    "unknown",
+    "all",
+    "-",
+    "nil",
+    "undefined",
+}
+
+
 class ChatMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: str = Field(min_length=1, max_length=4000)
 
 
 class SearchFilters(BaseModel):
-    intent: Literal["property_search", "general_question", "contact_request"] = "property_search"
+    intent: Literal["property_search", "document_qa", "media_request", "general_question", "contact_request"] = "property_search"
     location: Optional[str] = Field(default=None, max_length=100)
     city: Optional[str] = Field(default=None, max_length=100)
     bhk: Optional[int] = Field(default=None, ge=1, le=10)
@@ -22,12 +40,12 @@ class SearchFilters(BaseModel):
     @field_validator("bhk", "min_price", "max_price", mode="before")
     @classmethod
     def clean_numeric_filters(cls, v: Any) -> Optional[int]:
-        """Converts empty/unselected strings to None and parses numeric string values to integers."""
+        """Converts empty/unspecified strings to None and parses numeric string values to integers."""
         if v is None:
             return None
         if isinstance(v, str):
             stripped = v.strip()
-            if not stripped or stripped.lower() in ("null", "none"):
+            if not stripped or stripped.lower() in UNSPECIFIED_SENTINELS:
                 return None
             try:
                 return int(stripped)
@@ -38,12 +56,12 @@ class SearchFilters(BaseModel):
     @field_validator("location", "city", "property_type", mode="before")
     @classmethod
     def clean_string_filters(cls, v: Any) -> Optional[str]:
-        """Converts empty string filters to None."""
+        """Converts empty or unspecified string filters to None."""
         if v is None:
             return None
         if isinstance(v, str):
             stripped = v.strip()
-            if not stripped or stripped.lower() in ("null", "none"):
+            if not stripped or stripped.lower() in UNSPECIFIED_SENTINELS:
                 return None
             return stripped
         return v

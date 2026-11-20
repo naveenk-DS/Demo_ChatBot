@@ -45,9 +45,8 @@ export default function Sidebar({
                             conversations.map((c) => (
                                 <div
                                     key={c.id}
-                                    className={`conversation-item ${
-                                        c.id === activeChatId ? 'active' : ''
-                                    }`}
+                                    className={`conversation-item ${c.id === activeChatId ? 'active' : ''
+                                        }`}
                                     onClick={() => {
                                         onSelectChat(c.id);
                                         if (window.innerWidth < 1024) onClose();
@@ -74,39 +73,12 @@ export default function Sidebar({
                     </div>
                 </div>
 
-                <div className="sidebar-section knowledge-base-section">
-                    <div className="sidebar-section-title">
-                        <span>Active Knowledge Base</span>
-                        <span className="kb-badge">ChromaDB</span>
-                    </div>
-                    <div className="kb-document-card">
-                        <div className="kb-doc-title">Casagrand Aquagrove</div>
-                        <ul className="kb-doc-list">
-                            <li>
-                                <span className="doc-icon">📄</span>
-                                <span className="doc-name" title="2BHK + 2T Model House Script - Casagrand Aquagrove.pdf">
-                                    2BHK Model House Script
-                                </span>
-                            </li>
-                            <li>
-                                <span className="doc-icon">📄</span>
-                                <span className="doc-name" title="3BHK + 3T Model House Script - Casagrand Aquagrove.pdf">
-                                    3BHK Model House Script
-                                </span>
-                            </li>
-                        </ul>
-                        <div className="kb-pipeline-pill">
-                            <span>Hybrid Search (Dense + BM25 + RRF)</span>
-                        </div>
-                    </div>
-                </div>
-
                 <div className="sidebar-footer">
                     <div className="user-profile-badge">
                         <div className="user-avatar-circle">Demo</div>
                         <div className="user-info">
-                            <span className="user-name">Client Presentation</span>
-                            <span className="user-role">Interactive RAG Demo</span>
+                            <span className="user-name">KP sir Presentation</span>
+                            <span className="user-role">Interactive Demo To user</span>
                         </div>
                     </div>
                 </div>

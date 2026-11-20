@@ -68,7 +68,7 @@ export default function WelcomeScreen({ onSelectPrompt }) {
                     Explore Properties & Architectural Specifications
                 </h1>
                 <p className="welcome-subtitle">
-                    Ask questions about Casagrand Aquagrove model house scripts, floor plan dimensions,
+                    Ask questions about Demo Naveen Real Estate model house scripts, floor plan dimensions,
                     materials, and live real-estate database inventory.
                 </p>
             </div>

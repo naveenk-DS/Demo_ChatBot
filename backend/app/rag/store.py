@@ -201,11 +201,16 @@ def add_chunks(
 
 
 def get_collection_status(
-    client: Optional[chromadb.PersistentClient] = None,
+    client: Optional[Union[chromadb.PersistentClient, str]] = None,
     collection_name: str = DEFAULT_COLLECTION_NAME,
     persist_dir: Optional[Union[str, Path]] = None,
 ) -> dict[str, Any]:
     """Returns basic diagnostics of the ChromaDB collection."""
+    
+    if isinstance(client, str):
+        collection_name = client
+        client = None
+
     path = Path(persist_dir).resolve() if persist_dir else get_default_chroma_dir()
     db_client = client or get_vector_store(persist_dir=path)
     coll = db_client.get_or_create_collection(name=collection_name)

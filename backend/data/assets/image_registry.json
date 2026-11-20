@@ -1,0 +1,70 @@
+[
+  {
+    "filename": "Bathroom.jpg",
+    "file_path": "D:\\real_estate_ai_demo\\backend\\data\\assets\\images\\Bathroom.jpg",
+    "original_path": "D:\\real_estate_ai_demo\\pdf\\Bathroom.jpg",
+    "file_type": "image/jpeg",
+    "extension": ".jpg",
+    "file_size_bytes": 218056,
+    "ingestion_date": "2026-11-20T12:00:37.575328+00:00",
+    "category": "bathroom",
+    "property_name": "Casagrand Aquagrove",
+    "configuration": "general",
+    "associated_documents": [
+      "2BHK + 2T Model House Script - Casagrand Aquagrove.pdf",
+      "3BHK + 3T Model House Script - Casagrand Aquagrove.pdf",
+      "Housing.csv"
+    ]
+  },
+  {
+    "filename": "Bathroom.jpg.2.jpg",
+    "file_path": "D:\\real_estate_ai_demo\\backend\\data\\assets\\images\\Bathroom.jpg.2.jpg",
+    "original_path": "D:\\real_estate_ai_demo\\pdf\\Bathroom.jpg.2.jpg",
+    "file_type": "image/jpeg",
+    "extension": ".jpg",
+    "file_size_bytes": 7616,
+    "ingestion_date": "2026-11-20T12:00:37.575328+00:00",
+    "category": "bathroom",
+    "property_name": "Casagrand Aquagrove",
+    "configuration": "general",
+    "associated_documents": [
+      "2BHK + 2T Model House Script - Casagrand Aquagrove.pdf",
+      "3BHK + 3T Model House Script - Casagrand Aquagrove.pdf",
+      "Housing.csv"
+    ]
+  },
+  {
+    "filename": "Bedroom.jpg",
+    "file_path": "D:\\real_estate_ai_demo\\backend\\data\\assets\\images\\Bedroom.jpg",
+    "original_path": "D:\\real_estate_ai_demo\\pdf\\Bedroom.jpg",
+    "file_type": "image/jpeg",
+    "extension": ".jpg",
+    "file_size_bytes": 20291,
+    "ingestion_date": "2026-11-20T12:00:37.575328+00:00",
+    "category": "bedroom",
+    "property_name": "Casagrand Aquagrove",
+    "configuration": "general",
+    "associated_documents": [
+      "2BHK + 2T Model House Script - Casagrand Aquagrove.pdf",
+      "3BHK + 3T Model House Script - Casagrand Aquagrove.pdf",
+      "Housing.csv"
+    ]
+  },
+  {
+    "filename": "bedroom.jpg.2.jpg",
+    "file_path": "D:\\real_estate_ai_demo\\backend\\data\\assets\\images\\bedroom.jpg.2.jpg",
+    "original_path": "D:\\real_estate_ai_demo\\pdf\\bedroom.jpg.2.jpg",
+    "file_type": "image/jpeg",
+    "extension": ".jpg",
+    "file_size_bytes": 24622,
+    "ingestion_date": "2026-11-20T12:00:37.575328+00:00",
+    "category": "bedroom",
+    "property_name": "Casagrand Aquagrove",
+    "configuration": "general",
+    "associated_documents": [
+      "2BHK + 2T Model House Script - Casagrand Aquagrove.pdf",
+      "3BHK + 3T Model House Script - Casagrand Aquagrove.pdf",
+      "Housing.csv"
+    ]
+  }
+]

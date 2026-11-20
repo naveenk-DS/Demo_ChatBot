@@ -22,8 +22,9 @@ from .store import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TOP_K: int = 3
+DEFAULT_TOP_K: int = 5
 RRF_K: float = 60.0  # Standard Reciprocal Rank Fusion smoothing constant
+
 
 
 def tokenize(text: str) -> list[str]:

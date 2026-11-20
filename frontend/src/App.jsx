@@ -42,6 +42,9 @@ export default function App() {
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [sidebarOpen, setSidebarOpen] = useState(true);
     const [backendOnline, setBackendOnline] = useState(false);
+    const [imageAssets, setImageAssets] = useState([]);
+    const [allImageAssets, setAllImageAssets] = useState([]);
+    const [imageFilter, setImageFilter] = useState(null);
 
     // Conversations history in localStorage
     const [conversations, setConversations] = useState(() => {
@@ -87,6 +90,30 @@ export default function App() {
         };
     }, []);
 
+    // Load available image assets from backend
+    useEffect(() => {
+        let mounted = true;
+        const fetchImages = async () => {
+            try {
+                const res = await fetch(`${API}/api/assets/images`);
+                if (res.ok) {
+                    const data = await res.json();
+                    const list = data.images || [];
+                    if (mounted) {
+                        setAllImageAssets(list);
+                        // Do not automatically show image gallery on startup; keep panel clean on Matching Inventory
+                    }
+                }
+            } catch {
+                // Ignore if backend offline
+            }
+        };
+        fetchImages();
+        return () => {
+            mounted = false;
+        };
+    }, [backendOnline]);
+
     // Auto-scroll to bottom of conversation
     useEffect(() => {
         if (messages.length > 0) {
@@ -107,9 +134,23 @@ export default function App() {
     const handleNewChat = () => {
         setMessages([]);
         setProperties([]);
+        setImageAssets([]);
+        setImageFilter(null);
         setInput('');
         setActiveChatId(null);
         setNotice(null);
+    };
+
+    // Reset image gallery filter to display all available assets
+    const handleResetImageFilter = () => {
+        setImageAssets(allImageAssets);
+        setImageFilter({
+            active: true,
+            is_all: true,
+            category: 'All Property Images',
+            matched_count: allImageAssets.length,
+            total_available: allImageAssets.length,
+        });
     };
 
     // Load an existing conversation from sidebar
@@ -183,6 +224,15 @@ export default function App() {
 
             const receivedProperties = data.properties || [];
             setProperties(receivedProperties);
+
+            // Dynamic Context-Aware Image Retrieval handling
+            if (data.image_filter !== undefined) {
+                setImageFilter(data.image_filter);
+                setImageAssets(data.images || []);
+            } else if (data.images && data.images.length > 0) {
+                setImageAssets(data.images);
+                setImageFilter(null);
+            }
 
             // Update or create in conversation history
             const currentTitle = content.slice(0, 32) + (content.length > 32 ? '...' : '');
@@ -362,6 +412,11 @@ export default function App() {
                 <aside className="property-showcase-aside">
                     <PropertyResults
                         properties={properties}
+                        imageAssets={imageAssets}
+                        allImageAssets={allImageAssets}
+                        imageFilter={imageFilter}
+                        onResetImageFilter={handleResetImageFilter}
+                        apiBaseUrl={API}
                         onSelectProperty={(prop) => {
                             setSelectedProperty(prop);
                             setNotice(null);

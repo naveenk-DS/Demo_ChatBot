@@ -183,3 +183,48 @@ def load_pdf_documents(pdf_dir: Optional[Union[str, Path]] = None) -> list[dict[
 
     logger.info("Total extracted pages across all PDFs: %d", len(documents))
     return documents
+
+
+def load_csv_documents(data_dir: Optional[Union[str, Path]] = None) -> list[dict[str, Any]]:
+    """
+    Loads and extracts structured text records from all CSV files in the target directory.
+    Preserves dataset structure and attributes without modifying PDF ingestion.
+    """
+    import csv
+
+    target_dir = Path(data_dir).resolve() if data_dir else get_default_pdf_dir()
+    if not target_dir.exists() or not target_dir.is_dir():
+        return []
+
+    csv_files = sorted(target_dir.glob("*.csv"))
+    documents: list[dict[str, Any]] = []
+
+    for file_path in csv_files:
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                reader = csv.DictReader(f)
+                dataset_name = file_path.stem.replace("_", " ").title()
+
+                for row_idx, row in enumerate(reader, start=1):
+                    parts = [f"{k.strip()}: {v.strip()}" for k, v in row.items() if v and v.strip()]
+                    row_text = f"Dataset: {dataset_name} | Record #{row_idx}\n" + ", ".join(parts)
+                    config = f"{row.get('bedrooms', '')}BHK" if row.get('bedrooms') else "general"
+
+                    documents.append({
+                        "source": file_path.name,
+                        "page": row_idx,
+                        "text": row_text,
+                        "property_name": dataset_name,
+                        "configuration": config,
+                    })
+        except Exception as e:
+            logger.error("Failed to read CSV file '%s': %s", file_path.name, e)
+
+    return documents
+
+
+def load_all_documents(target_dir: Optional[Union[str, Path]] = None) -> list[dict[str, Any]]:
+    """Loads all text-based documents (PDF and CSV) from the target directory."""
+    docs = load_pdf_documents(target_dir)
+    docs.extend(load_csv_documents(target_dir))
+    return docs

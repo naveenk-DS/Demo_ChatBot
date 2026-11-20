@@ -14,6 +14,7 @@ sys.path.insert(0, str(backend_dir))
 
 from app.rag.loader import load_pdf_documents
 from app.rag.chunker import chunk_documents
+from app.rag.image_assets import ingest_image_assets, list_image_assets
 from app.rag.store import (
     get_vector_store,
     add_chunks,
@@ -200,9 +201,21 @@ def run_structured_pipeline():
     print(f"   Ingestion into '{COLLECTION_V3}': {result}")
     print(f"   Total records in '{COLLECTION_V3}': {coll_v3.count()}")
 
+    # Ingest plain image assets alongside documents
+    print("\n[ASSET INGESTION] Discovering and registering plain image assets...")
+    img_assets = ingest_image_assets()
+    print(f"   Registered {len(img_assets)} image asset(s) into local asset registry.")
+    for img in img_assets:
+        print(f"   - {img['filename']} (Category: {img['category']}, Property: {img['property_name']})")
+
 
 if __name__ == "__main__":
-    if "--v3" in sys.argv:
+    if "--images" in sys.argv or "--assets" in sys.argv:
+        assets = ingest_image_assets()
+        print(f"Ingested {len(assets)} image asset(s):")
+        for a in assets:
+            print(f" - {a['filename']} -> {a['file_path']} ({a['category']})")
+    elif "--v3" in sys.argv:
         run_structured_pipeline()
     else:
         run_pipeline()
