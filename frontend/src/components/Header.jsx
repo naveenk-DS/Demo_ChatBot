@@ -61,7 +61,7 @@ export default function Header({
                         >
                             <option value="ollama">Ollama (Local Private AI)</option>
                             <option value="openai">OpenAI (GPT-4.1-mini)</option>
-                            <option value="gemini">Google Gemini (2.5 Flash)</option>
+                            <option value="gemini">Google Gemini (3.8 Flash)</option>
                         </select>
                     </div>
 

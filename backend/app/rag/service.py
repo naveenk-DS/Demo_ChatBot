@@ -146,7 +146,7 @@ def _generate_answer_from_gemini(
     query: str,
     timeout: int = DEFAULT_TIMEOUT,
 ) -> str:
-    """Generates an answer using Google Gemini API with automatic model fallback."""
+    """Generates an answer using Google Gemini API with the configured model."""
     from ..config import env
     from google import genai
     from google.genai import types
@@ -160,38 +160,28 @@ def _generate_answer_from_gemini(
 
     client = genai.Client(api_key=key, http_options=types.HttpOptions(api_version="v1beta", timeout=timeout))
     prompt = f"{SYSTEM_PROMPT}\n\nRetrieved Property Documents Context:\n{prompt_context}\n\nQuestion:\n{query}"
-    primary_model = env("GEMINI_MODEL", "gemini-2.0-flash").strip()
+    model_name = env("GEMINI_MODEL", "gemini-3.8-flash").strip()
 
-    candidate_models = [primary_model]
-    for fallback in ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash-lite-preview-06-17", "gemini-2.5-flash"]:
-        if fallback not in candidate_models:
-            candidate_models.append(fallback)
-
-    last_exc = None
-    for model_name in candidate_models:
-        try:
-            resp = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(temperature=0.0),
-            )
-            return resp.text or ""
-        except Exception as e:
-            last_exc = e
-            err_str = str(e)
-            if "API_KEY_INVALID" in err_str or "API key not valid" in err_str:
-                raise RuntimeError(
-                    "Your Gemini API key is invalid or not activated. "
-                    "Please verify GEMINI_API_KEY in Render Environment Variables (from https://aistudio.google.com/apikey)."
-                ) from e
-            if "404" in err_str or "not found" in err_str.lower():
-                logger.warning("Gemini model '%s' not found for RAG, trying fallback...", model_name)
-                continue
-            raise
-
-    raise RuntimeError(
-        f"Unable to generate RAG answer with Gemini models ({', '.join(candidate_models)}): {last_exc}"
-    ) from last_exc
+    try:
+        resp = client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+            config=types.GenerateContentConfig(temperature=0.0),
+        )
+        return resp.text or ""
+    except Exception as e:
+        err_str = str(e)
+        if "API_KEY_INVALID" in err_str or "API key not valid" in err_str:
+            raise RuntimeError(
+                "Your Gemini API key is invalid or not activated. "
+                "Please verify GEMINI_API_KEY in Render Environment Variables (from https://aistudio.google.com/apikey)."
+            ) from e
+        if "404" in err_str or "not found" in err_str.lower():
+            raise RuntimeError(
+                f"Gemini model '{model_name}' was not found (HTTP 404). "
+                "Please ensure GEMINI_MODEL=gemini-3.8-flash is configured in Render Environment Variables."
+            ) from e
+        raise
 
 
 def answer_question(

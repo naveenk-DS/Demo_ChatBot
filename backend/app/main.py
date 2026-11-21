@@ -94,8 +94,8 @@ def get_providers():
             },
             "gemini": {
                 "id": "gemini",
-                "name": "Google Gemini (2.5 Flash / 2.0 Flash)",
-                "model": env("GEMINI_MODEL", "gemini-2.0-flash"),
+                "name": "Google Gemini (3.8 Flash)",
+                "model": env("GEMINI_MODEL", "gemini-3.8-flash"),
                 "configured": bool(env("GEMINI_API_KEY") or env("GOOGLE_API_KEY")),
                 "is_cloud": True,
             },

@@ -188,38 +188,31 @@ def _normalize_extracted(data: dict[str, Any], current_query: str = "") -> dict[
     return data
 
 
-def _call_gemini_generate(client: Any, contents: Any, config: Any, primary_model: str) -> str:
-    """Calls Gemini API with automatic model fallback (primary -> gemini-2.0-flash -> gemini-1.5-flash)."""
-    candidate_models = [primary_model]
-    for fallback in ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash-lite-preview-06-17", "gemini-2.5-flash"]:
-        if fallback not in candidate_models:
-            candidate_models.append(fallback)
+DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
 
-    last_exc = None
-    for m in candidate_models:
-        try:
-            result = client.models.generate_content(
-                model=m,
-                contents=contents,
-                config=config,
-            )
-            return result.text or ""
-        except Exception as e:
-            last_exc = e
-            err_str = str(e)
-            if "API_KEY_INVALID" in err_str or "API key not valid" in err_str:
-                raise RuntimeError(
-                    "Your Gemini API key is invalid or not activated. "
-                    "Please verify GEMINI_API_KEY in Render Environment Variables (from https://aistudio.google.com/apikey)."
-                ) from e
-            if "404" in err_str or "not found" in err_str.lower():
-                logger.warning("Gemini model '%s' not found, trying fallback...", m)
-                continue
-            raise
 
-    raise RuntimeError(
-        f"Unable to generate response with Gemini models ({', '.join(candidate_models)}): {last_exc}"
-    ) from last_exc
+def _call_gemini_generate(client: Any, contents: Any, config: Any, model_name: str) -> str:
+    """Calls Gemini API with the configured model and surfaces precise error diagnostics."""
+    try:
+        result = client.models.generate_content(
+            model=model_name,
+            contents=contents,
+            config=config,
+        )
+        return result.text or ""
+    except Exception as e:
+        err_str = str(e)
+        if "API_KEY_INVALID" in err_str or "API key not valid" in err_str:
+            raise RuntimeError(
+                "Your Gemini API key is invalid or not activated. "
+                "Please verify GEMINI_API_KEY in Render Environment Variables (from https://aistudio.google.com/apikey)."
+            ) from e
+        if "404" in err_str or "not found" in err_str.lower():
+            raise RuntimeError(
+                f"Gemini model '{model_name}' was not found (HTTP 404). "
+                f"Please ensure GEMINI_MODEL={DEFAULT_GEMINI_MODEL} is configured in Render Environment Variables."
+            ) from e
+        raise
 
 
 def extract(provider: str, history: list[dict[str, str]], current: str) -> dict[str, Any]:
@@ -258,12 +251,12 @@ def extract(provider: str, history: list[dict[str, str]], current: str) -> dict[
             )
         client = genai.Client(api_key=key, http_options=types.HttpOptions(api_version="v1beta"))
         transcript = "\n".join(f'{m["role"]}: {m["content"]}' for m in turns)
-        model_name = env("GEMINI_MODEL", "gemini-2.0-flash")
+        model_name = env("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip()
         content_text = _call_gemini_generate(
             client=client,
             contents=PROMPT + "\nConversation:\n" + transcript,
             config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0),
-            primary_model=model_name,
+            model_name=model_name,
         )
         return _normalize_extracted(json.loads(content_text or "{}"), current)
 
