@@ -16,7 +16,19 @@ if _root_env.exists():
 load_dotenv(override=False)
 
 def env(name: str, default: str = "") -> str:
-    return os.getenv(name, default)
+    val = os.getenv(name)
+    if val is not None and val.strip():
+        return val.strip()
+    # Support common alternative environment variable names
+    if name == "GEMINI_API_KEY":
+        alt = os.getenv("GOOGLE_API_KEY")
+        if alt is not None and alt.strip():
+            return alt.strip()
+    if name == "GEMINI_MODEL":
+        alt = os.getenv("GOOGLE_MODEL")
+        if alt is not None and alt.strip():
+            return alt.strip()
+    return default
 
 def int_env(name: str, default: int) -> int:
     try:

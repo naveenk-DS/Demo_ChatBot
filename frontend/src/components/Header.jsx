@@ -11,6 +11,7 @@ export default function Header({
     onToggleSidebar,
     sidebarOpen,
     backendOnline,
+    apiBaseUrl = '',
 }) {
     return (
         <header className="app-header">
@@ -33,7 +34,10 @@ export default function Header({
                     </div>
                 </div>
 
-                <div className="status-pill-indicator">
+                <div
+                    className="status-pill-indicator"
+                    title={backendOnline ? `Connected to ${apiBaseUrl || 'backend'}` : `Trying to reach ${apiBaseUrl || 'backend'}...`}
+                >
                     <span
                         className={`status-dot ${backendOnline ? 'online' : 'checking'}`}
                     />

@@ -7,7 +7,28 @@ import ChatInput from './components/ChatInput';
 import PropertyResults from './components/PropertyResults';
 import EnquiryModal from './components/EnquiryModal';
 
-const API = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+export function getApiBaseUrl() {
+    // 1. Check Vite build-time environment variables
+    const envUrl = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL;
+    if (envUrl && typeof envUrl === 'string' && envUrl.trim()) {
+        return envUrl.trim().replace(/\/+$/, '');
+    }
+    // 2. Check localStorage runtime override (useful for deployed client demo)
+    if (typeof window !== 'undefined') {
+        const stored = localStorage.getItem('estateai_api_url');
+        if (stored && stored.trim()) {
+            return stored.trim().replace(/\/+$/, '');
+        }
+        // 3. Localhost development fallback
+        if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+            return 'http://localhost:8000';
+        }
+    }
+    // 4. Same-origin fallback for production reverse proxy / single domain
+    return '';
+}
+
+const API = getApiBaseUrl();
 
 export function sanitizeFilters(filters) {
     if (!filters || typeof filters !== 'object') return undefined;
@@ -189,7 +210,7 @@ export default function App() {
         setMessages(updatedMessages);
         setInput('');
         setBusy(true);
-        setBusyStatus(provider === 'ollama' ? 'Querying local model (qwen2.5:7b) & vector store...' : 'Connecting to AI provider...');
+        setBusyStatus(provider === 'ollama' ? 'Searching for your details, Just ahh Sec..' : 'Connecting to AI provider...');
 
         const historyPayload = messages.slice(-8).map((m) => ({
             role: m.role,
@@ -207,9 +228,17 @@ export default function App() {
                 }),
             });
 
-            const data = await res.json();
+            let data;
+            const contentType = res.headers.get('content-type') || '';
+            if (contentType.includes('application/json')) {
+                data = await res.json();
+            } else {
+                const text = await res.text();
+                data = { detail: text || `Server returned HTTP ${res.status}` };
+            }
+
             if (!res.ok) {
-                throw new Error(data.detail || 'Assistant request failed.');
+                throw new Error(data.detail || `Server error (HTTP ${res.status})`);
             }
 
             const assistantMsg = {
@@ -259,9 +288,17 @@ export default function App() {
                 ]);
             }
         } catch (err) {
+            let errorText = err.message || 'Unknown network error';
+            if (errorText === 'Failed to fetch' || errorText.includes('Failed to fetch') || errorText.includes('NetworkError')) {
+                const targetHost = API || window.location.origin;
+                errorText = `Unable to connect to backend server at **${targetHost}**.\n\n` +
+                    `• **If on Render**: Free tier web services go to sleep when inactive and take ~50 seconds to boot up on the first request. Please wait a moment and retry.\n` +
+                    `• **If running locally**: Ensure backend is running (\`uvicorn app.main:app --port 8000\`).\n` +
+                    `• **CORS / Build**: Check that \`CORS_ORIGINS\` on your backend allows this domain, or set \`VITE_API_BASE_URL\` in your Render Environment Variables and rebuild.`;
+            }
             const errorMsg = {
                 role: 'assistant',
-                content: `⚠️ **Error**: ${err.message}`,
+                content: `⚠️ **Connection Error**: ${errorText}`,
                 timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             };
             setMessages([...updatedMessages, errorMsg]);
@@ -330,6 +367,7 @@ export default function App() {
                 onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
                 sidebarOpen={sidebarOpen}
                 backendOnline={backendOnline}
+                apiBaseUrl={API}
             />
 
             {/* Notification Toast */}

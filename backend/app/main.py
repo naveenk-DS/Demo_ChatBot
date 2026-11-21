@@ -17,9 +17,30 @@ from .rag.image_assets import list_image_assets, ingest_image_assets, get_image_
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Real Estate AI Demo API")
-origins = [x.strip() for x in env("CORS_ORIGINS", "http://localhost:5173").split(",") if x.strip()]
-app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True,
-                   allow_methods=["GET", "POST"], allow_headers=["*"])
+
+# Robust CORS Configuration: seamlessly supports local development, Render deployment, and custom origins
+cors_env = env("CORS_ORIGINS", "").strip()
+if not cors_env or cors_env == "*":
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    explicit_origins = [x.strip() for x in cors_env.split(",") if x.strip()]
+    for default_origin in ["http://localhost:5173", "http://localhost:3000", "http://127.0.0.1:5173", "http://127.0.0.1:3000"]:
+        if default_origin not in explicit_origins:
+            explicit_origins.append(default_origin)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=explicit_origins,
+        allow_origin_regex=r"https://.*\.onrender\.com",
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 # Mount local image assets directory for direct static serving
 assets_dir = Path(__file__).resolve().parent.parent / "data" / "assets" / "images"
@@ -47,7 +68,46 @@ def _get_image_assets_payload() -> list[dict]:
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "service": "real-estate-ai-demo",
+        "environment": env("APP_ENV", "development"),
+        "providers": {
+            "gemini": bool(env("GEMINI_API_KEY") or env("GOOGLE_API_KEY")),
+            "openai": bool(env("OPENAI_API_KEY")),
+            "ollama": True,
+        },
+    }
+
+
+@app.get("/api/providers")
+def get_providers():
+    """Returns available LLM provider status without exposing secrets."""
+    return {
+        "status": "success",
+        "providers": {
+            "ollama": {
+                "id": "ollama",
+                "name": "Ollama (Local Private AI)",
+                "model": env("OLLAMA_CHAT_MODEL", env("OLLAMA_LLM_MODEL", env("LLM_MODEL", "qwen2.5:3b"))),
+                "is_cloud": False,
+            },
+            "gemini": {
+                "id": "gemini",
+                "name": "Google Gemini (2.5 Flash / 2.0 Flash)",
+                "model": env("GEMINI_MODEL", "gemini-2.0-flash"),
+                "configured": bool(env("GEMINI_API_KEY") or env("GOOGLE_API_KEY")),
+                "is_cloud": True,
+            },
+            "openai": {
+                "id": "openai",
+                "name": "OpenAI (GPT-4.1-mini)",
+                "model": env("OPENAI_MODEL", "gpt-4.1-mini"),
+                "configured": bool(env("OPENAI_API_KEY")),
+                "is_cloud": True,
+            },
+        },
+    }
 
 
 @app.get("/api/assets/images")

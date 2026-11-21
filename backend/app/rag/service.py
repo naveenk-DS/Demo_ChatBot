@@ -112,7 +112,10 @@ def _generate_answer_from_openai(
 
     key = env("OPENAI_API_KEY")
     if not key:
-        raise RuntimeError("OPENAI_API_KEY is not configured.")
+        raise RuntimeError(
+            "OPENAI_API_KEY is not configured in environment variables. "
+            "Please configure OPENAI_API_KEY in Render Environment Variables."
+        )
 
     client = OpenAI(api_key=key, timeout=timeout)
     try:
@@ -129,10 +132,11 @@ def _generate_answer_from_openai(
         )
         return resp.choices[0].message.content or ""
     except Exception as e:
-        if "invalidated" in str(e).lower() or "401" in str(e):
+        err_str = str(e).lower()
+        if "invalidated" in err_str or "401" in err_str or "incorrect api key" in err_str:
             raise RuntimeError(
-                "Your OpenAI API key has been invalidated by OpenAI. "
-                "Please generate a new API key at https://platform.openai.com/api-keys and update your .env file."
+                "Your OpenAI API key is invalid, expired, or has insufficient quota. "
+                "Please verify OPENAI_API_KEY in Render Environment Variables (from https://platform.openai.com/api-keys)."
             ) from e
         raise
 
@@ -142,23 +146,52 @@ def _generate_answer_from_gemini(
     query: str,
     timeout: int = DEFAULT_TIMEOUT,
 ) -> str:
-    """Generates an answer using Google Gemini API if configured."""
+    """Generates an answer using Google Gemini API with automatic model fallback."""
     from ..config import env
     from google import genai
     from google.genai import types
 
-    key = env("GEMINI_API_KEY")
+    key = env("GEMINI_API_KEY") or env("GOOGLE_API_KEY")
     if not key:
-        raise RuntimeError("GEMINI_API_KEY is not configured.")
+        raise RuntimeError(
+            "GEMINI_API_KEY (or GOOGLE_API_KEY) is not configured in environment variables. "
+            "Please configure GEMINI_API_KEY in Render Environment Variables (from https://aistudio.google.com/apikey)."
+        )
 
     client = genai.Client(api_key=key, http_options=types.HttpOptions(api_version="v1beta", timeout=timeout))
     prompt = f"{SYSTEM_PROMPT}\n\nRetrieved Property Documents Context:\n{prompt_context}\n\nQuestion:\n{query}"
-    resp = client.models.generate_content(
-        model=env("GEMINI_MODEL", "gemini-2.5-flash"),
-        contents=prompt,
-        config=types.GenerateContentConfig(temperature=0.0),
-    )
-    return resp.text or ""
+    primary_model = env("GEMINI_MODEL", "gemini-2.0-flash").strip()
+
+    candidate_models = [primary_model]
+    for fallback in ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash-lite-preview-06-17", "gemini-2.5-flash"]:
+        if fallback not in candidate_models:
+            candidate_models.append(fallback)
+
+    last_exc = None
+    for model_name in candidate_models:
+        try:
+            resp = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(temperature=0.0),
+            )
+            return resp.text or ""
+        except Exception as e:
+            last_exc = e
+            err_str = str(e)
+            if "API_KEY_INVALID" in err_str or "API key not valid" in err_str:
+                raise RuntimeError(
+                    "Your Gemini API key is invalid or not activated. "
+                    "Please verify GEMINI_API_KEY in Render Environment Variables (from https://aistudio.google.com/apikey)."
+                ) from e
+            if "404" in err_str or "not found" in err_str.lower():
+                logger.warning("Gemini model '%s' not found for RAG, trying fallback...", model_name)
+                continue
+            raise
+
+    raise RuntimeError(
+        f"Unable to generate RAG answer with Gemini models ({', '.join(candidate_models)}): {last_exc}"
+    ) from last_exc
 
 
 def answer_question(

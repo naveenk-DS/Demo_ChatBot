@@ -188,12 +188,49 @@ def _normalize_extracted(data: dict[str, Any], current_query: str = "") -> dict[
     return data
 
 
+def _call_gemini_generate(client: Any, contents: Any, config: Any, primary_model: str) -> str:
+    """Calls Gemini API with automatic model fallback (primary -> gemini-2.0-flash -> gemini-1.5-flash)."""
+    candidate_models = [primary_model]
+    for fallback in ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash-lite-preview-06-17", "gemini-2.5-flash"]:
+        if fallback not in candidate_models:
+            candidate_models.append(fallback)
+
+    last_exc = None
+    for m in candidate_models:
+        try:
+            result = client.models.generate_content(
+                model=m,
+                contents=contents,
+                config=config,
+            )
+            return result.text or ""
+        except Exception as e:
+            last_exc = e
+            err_str = str(e)
+            if "API_KEY_INVALID" in err_str or "API key not valid" in err_str:
+                raise RuntimeError(
+                    "Your Gemini API key is invalid or not activated. "
+                    "Please verify GEMINI_API_KEY in Render Environment Variables (from https://aistudio.google.com/apikey)."
+                ) from e
+            if "404" in err_str or "not found" in err_str.lower():
+                logger.warning("Gemini model '%s' not found, trying fallback...", m)
+                continue
+            raise
+
+    raise RuntimeError(
+        f"Unable to generate response with Gemini models ({', '.join(candidate_models)}): {last_exc}"
+    ) from last_exc
+
+
 def extract(provider: str, history: list[dict[str, str]], current: str) -> dict[str, Any]:
     turns = conversation(history, current)
     if provider == "openai":
         key = env("OPENAI_API_KEY")
         if not key:
-            raise RuntimeError("OPENAI_API_KEY is not configured.")
+            raise RuntimeError(
+                "OPENAI_API_KEY is not configured in environment variables. "
+                "Please configure OPENAI_API_KEY in Render Environment Variables."
+            )
         client = OpenAI(api_key=key)
         try:
             result = client.chat.completions.create(
@@ -204,25 +241,31 @@ def extract(provider: str, history: list[dict[str, str]], current: str) -> dict[
             )
             return _normalize_extracted(json.loads(result.choices[0].message.content or "{}"), current)
         except Exception as e:
-            if "invalidated" in str(e).lower() or "401" in str(e):
+            err_str = str(e).lower()
+            if "invalidated" in err_str or "401" in err_str or "incorrect api key" in err_str:
                 raise RuntimeError(
-                    "Your OpenAI API key has been invalidated by OpenAI. "
-                    "Please generate a new API key at https://platform.openai.com/api-keys and update your .env file."
+                    "Your OpenAI API key is invalid, expired, or has insufficient quota. "
+                    "Please verify OPENAI_API_KEY in Render Environment Variables (from https://platform.openai.com/api-keys)."
                 ) from e
             raise
 
     if provider == "gemini":
-        key = env("GEMINI_API_KEY")
+        key = env("GEMINI_API_KEY") or env("GOOGLE_API_KEY")
         if not key:
-            raise RuntimeError("GEMINI_API_KEY is not configured.")
+            raise RuntimeError(
+                "GEMINI_API_KEY (or GOOGLE_API_KEY) is not configured in environment variables. "
+                "Please configure GEMINI_API_KEY in Render Environment Variables (from https://aistudio.google.com/apikey)."
+            )
         client = genai.Client(api_key=key, http_options=types.HttpOptions(api_version="v1beta"))
         transcript = "\n".join(f'{m["role"]}: {m["content"]}' for m in turns)
-        result = client.models.generate_content(
-            model=env("GEMINI_MODEL", "gemini-2.5-flash"),
+        model_name = env("GEMINI_MODEL", "gemini-2.0-flash")
+        content_text = _call_gemini_generate(
+            client=client,
             contents=PROMPT + "\nConversation:\n" + transcript,
             config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0),
+            primary_model=model_name,
         )
-        return _normalize_extracted(json.loads(result.text or "{}"), current)
+        return _normalize_extracted(json.loads(content_text or "{}"), current)
 
     if provider == "ollama":
         base_url = env("OLLAMA_BASE_URL", DEFAULT_OLLAMA_URL).rstrip("/")
@@ -260,13 +303,12 @@ def extract(provider: str, history: list[dict[str, str]], current: str) -> dict[
             raise RuntimeError(f"Ollama API request failed with HTTP {he.code}: {he.reason}") from he
         except urllib.error.URLError as ue:
             raise ConnectionError(
-                f"Ollama server is not running at {base_url}. "
-                "Please start Ollama locally with 'ollama serve'."
+                f"Ollama server is not reachable at {base_url}. "
+                "For local development, ensure Ollama is running ('ollama serve'). "
+                "For Render deployment, please switch to Google Gemini or OpenAI in the LLM Provider dropdown."
             ) from ue
         except json.JSONDecodeError as je:
             raise ValueError(f"Ollama returned invalid JSON response: {je}") from je
-
-    raise ValueError(f"Unsupported provider: '{provider}'. Supported providers are: openai, gemini, ollama.")
 
     raise ValueError(f"Unsupported provider: '{provider}'. Supported providers are: openai, gemini, ollama.")
 
