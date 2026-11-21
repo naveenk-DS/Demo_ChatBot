@@ -136,28 +136,34 @@ def chat(req: ChatRequest):
     try:
         user_msg_lower = req.message.lower().strip()
 
-        # FAST-PATH 1: Media requests (images, photos, room visuals)
-        is_media = any(k in user_msg_lower for k in ["image", "images", "photo", "photos", "picture", "pictures", "virtual tour", "gallery"]) or (
-            any(user_msg_lower.startswith(p) or f" {p} " in user_msg_lower for p in ["show me", "show", "display", "view"])
-            and any(t in user_msg_lower for t in ["master bedroom", "bedroom", "bathroom", "kitchen", "balcony", "living", "dining", "entrance", "floor plan"])
-            and not any(k in user_msg_lower for k in ["dimension", "dimensions", "specification", "specifications", "size", "area", "sqft", "measure", "how many", "does the", "compare", "what are"])
+        # FAST-PATH 1: Media requests (images, photos, room visuals, or contextual references to rooms)
+        visual_action = any(
+            user_msg_lower.startswith(p) or f" {p} " in user_msg_lower or user_msg_lower.startswith(f"{p} ")
+            for p in ["show me", "show", "display", "view", "see", "look at", "can you show", "can i see", "could you show"]
         )
+        has_media_word = any(k in user_msg_lower for k in ["image", "images", "photo", "photos", "picture", "pictures", "virtual tour", "gallery"])
+        has_room_term = any(t in user_msg_lower for t in ["master bedroom", "bedroom", "bathroom", "kitchen", "balcony", "living", "dining", "entrance", "floor plan"])
+        has_contextual_room_ref = any(phrase in user_msg_lower for phrase in ["that room", "this room", "the room", "show it", "show that", "show me that", "see it", "view it", "display it"])
+        has_doc_qa_keyword = any(k in user_msg_lower for k in ["dimension", "dimensions", "specification", "specifications", "size", "area", "sqft", "measure", "how many", "does the", "compare", "what are"])
+
+        is_media = (has_media_word or (visual_action and (has_room_term or has_contextual_room_ref))) and not has_doc_qa_keyword
         if is_media:
-            search_res = search_image_assets(req.message)
+            history_list = [m.model_dump() for m in req.history]
+            search_res = search_image_assets(req.message, history=history_list)
             return {
                 "status": "message",
                 "assistant_message": search_res["assistant_message"],
                 "filters": {"intent": "media_request"},
                 "properties": [],
-                "images": search_res["images"],
+                "images": search_res.get("images", []),
                 "image_filter": {
                     "active": True,
-                    "is_all": search_res["is_all"],
-                    "category": search_res["display_name"],
-                    "matched_count": search_res["matched_count"],
-                    "total_available": search_res["total_available"],
-                    "available_categories": search_res["available_categories"],
-                },
+                    "is_all": search_res.get("is_all", False),
+                    "category": search_res.get("display_name", "Images"),
+                    "matched_count": search_res.get("matched_count", 0),
+                    "total_available": search_res.get("total_available", 0),
+                    "available_categories": search_res.get("available_categories", []),
+                } if search_res.get("images") else None,
             }
 
         # FAST-PATH 2: Reset / Forget budget requests
@@ -228,6 +234,25 @@ def chat(req: ChatRequest):
                 merged = filters.model_dump()
                 merged.update(explicit)
                 filters = SearchFilters.model_validate(merged)
+
+        # Media request handling from conversational understanding
+        if filters.intent == "media_request":
+            search_res = search_image_assets(req.message, history=history)
+            return {
+                "status": "message",
+                "assistant_message": search_res["assistant_message"],
+                "filters": filters.model_dump(),
+                "properties": [],
+                "images": search_res.get("images", []),
+                "image_filter": {
+                    "active": True,
+                    "is_all": search_res.get("is_all", False),
+                    "category": search_res.get("display_name", "Images"),
+                    "matched_count": search_res.get("matched_count", 0),
+                    "total_available": search_res.get("total_available", 0),
+                    "available_categories": search_res.get("available_categories", []),
+                } if search_res.get("images") else None,
+            }
 
         # 3. Document QA (Specifications, dimensions, comparisons, room counts, entrance)
         if filters.intent == "document_qa":

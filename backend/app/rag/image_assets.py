@@ -247,16 +247,19 @@ def format_asset_payload(record: dict[str, Any]) -> dict[str, Any]:
 def search_image_assets(
     query: str,
     property_name: Optional[str] = None,
+    history: Optional[list[dict[str, str]]] = None,
 ) -> dict[str, Any]:
     """
-    Dynamically searches, filters, and formats local image assets based on the user's chat query.
+    Dynamically searches, filters, and formats local image assets based on the user's chat query and conversation history.
 
     Adheres strictly to constraints:
     - No OCR, no vision AI, no caption generation, no LLM image analysis.
     - Matches dynamically against registered categories, metadata, and filenames.
     - If user asks for all property images, returns all available images for that context.
     - If a specific category is requested, returns ONLY matching images.
-    - If no images match that category, returns empty list (no unrelated fallback).
+    - If the user refers to images contextually ("show the image", "show that room", "show it"),
+      infers the room category from the immediately preceding conversation context.
+    - If the previous topic is ambiguous, asks a short clarification instead of showing unrelated images.
     """
     records = list_image_assets()
     if not records:
@@ -335,7 +338,7 @@ def search_image_assets(
             if target_category:
                 break
 
-    # If not found in known categories, check dynamically against all categories registered in existing images
+    # If not found in current query, check dynamically against all categories registered in existing images
     if not target_category:
         for r in records:
             cat = r.get("category", "").lower()
@@ -353,10 +356,92 @@ def search_image_assets(
         )
         if match_phrase:
             extracted = match_phrase.group(1).strip()
-            if extracted not in ("images", "image", "photos", "photo", "pictures", "picture", "the", "me", "a", "an"):
+            if extracted not in ("images", "image", "photos", "photo", "pictures", "picture", "the", "me", "a", "an", "it", "that", "this"):
                 target_category = extracted
                 target_keywords = [extracted]
                 display_name = extracted.title()
+
+    # Context-aware inference from conversation history when user makes an implicit reference
+    is_implicit_request = not target_category and (
+        any(k in raw_query for k in ["image", "images", "photo", "photos", "picture", "pictures"])
+        or any(phrase in raw_query for phrase in ["that room", "this room", "the room", "show it", "show that", "show me that", "see it", "view it", "display it"])
+        or clean_q in ("show me", "can you show", "can i see", "show", "display", "view", "show it", "show that", "show that room")
+    )
+
+    if not target_category and history:
+        # Helper to detect unique room categories mentioned in a text block
+        def _extract_categories_from_text(text: str) -> list[tuple[str, list[str]]]:
+            if not text:
+                return []
+            found = []
+            lower_text = text.lower()
+            for cat, keywords in ROOM_CATEGORIES.items():
+                if any(re.search(rf"\b{re.escape(kw)}\b", lower_text) for kw in keywords):
+                    found.append((cat, keywords))
+            return found
+
+        prev_user_msgs = [m.get("content", "") for m in history if m.get("role") == "user"]
+        prev_asst_msgs = [m.get("content", "") for m in history if m.get("role") == "assistant"]
+
+        last_user_text = prev_user_msgs[-1] if prev_user_msgs else ""
+        last_asst_text = prev_asst_msgs[-1] if prev_asst_msgs else ""
+
+        # Step A: Check if the immediately preceding user query explicitly focused on a specific room
+        user_cats = _extract_categories_from_text(last_user_text)
+        if len(user_cats) == 1:
+            target_category, target_keywords = user_cats[0]
+            display_name = target_category.title()
+            logger.info("Contextual image retrieval inferred category '%s' from previous user query: '%s'", display_name, last_user_text)
+        elif len(user_cats) == 0:
+            # Step B: Check the assistant's previous response
+            asst_cats = _extract_categories_from_text(last_asst_text)
+            if len(asst_cats) == 1:
+                target_category, target_keywords = asst_cats[0]
+                display_name = target_category.title()
+                logger.info("Contextual image retrieval inferred category '%s' from previous assistant message.", display_name)
+            elif len(asst_cats) > 1 and is_implicit_request:
+                # Ambiguous: multiple rooms were discussed across the whole unit
+                avail_str = " or ".join(available_categories) if available_categories else "Bedroom or Bathroom"
+                return {
+                    "images": [],
+                    "category": None,
+                    "display_name": "Clarification",
+                    "is_all": False,
+                    "is_filtered": False,
+                    "matched_count": 0,
+                    "total_available": total_available,
+                    "available_categories": available_categories,
+                    "assistant_message": f"Which room or area would you like to see? I can display images for {avail_str}.",
+                }
+        elif len(user_cats) > 1 and is_implicit_request:
+            # Ambiguous: user previously asked about multiple rooms
+            cats_str = " or ".join([c[0].title() for c in user_cats])
+            return {
+                "images": [],
+                "category": None,
+                "display_name": "Clarification",
+                "is_all": False,
+                "is_filtered": False,
+                "matched_count": 0,
+                "total_available": total_available,
+                "available_categories": available_categories,
+                "assistant_message": f"Which room would you like to see? You can choose from {cats_str}.",
+            }
+
+    # If still not determined and it's an implicit request with no prior room context
+    if not target_category and is_implicit_request:
+        avail_str = " or ".join(available_categories) if available_categories else "Bedroom or Bathroom"
+        return {
+            "images": [],
+            "category": None,
+            "display_name": "Clarification",
+            "is_all": False,
+            "is_filtered": False,
+            "matched_count": 0,
+            "total_available": total_available,
+            "available_categories": available_categories,
+            "assistant_message": f"Which room or area would you like to see? Currently available categories include: {avail_str}.",
+        }
 
     # Fallback to general if nothing could be determined
     if not target_category:

@@ -116,6 +116,10 @@ def _normalize_extracted(data: dict[str, Any], current_query: str = "") -> dict[
         data["intent"] = "media_request"
         data["needs_clarification"] = False
         data["clarification_question"] = None
+    elif any(phrase in query_lower for phrase in ["that room", "this room", "the room", "show it", "show that", "show me that", "see it", "view it"]) and not has_doc_qa_keyword and not has_search_criteria:
+        data["intent"] = "media_request"
+        data["needs_clarification"] = False
+        data["clarification_question"] = None
 
     # Rule 2: Explicit filter resets ("forget the budget", "ignore budget", etc.)
     elif any(k in query_lower for k in ["forget the budget", "forget budget", "ignore the budget", "ignore budget", "clear budget", "reset budget"]):
