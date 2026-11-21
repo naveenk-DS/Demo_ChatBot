@@ -160,7 +160,7 @@ def _generate_answer_from_gemini(
 
     client = get_gemini_client(key)
     prompt = f"{SYSTEM_PROMPT}\n\nRetrieved Property Documents Context:\n{prompt_context}\n\nQuestion:\n{query}"
-    model_name = env("GEMINI_MODEL", "gemini-3.8-flash").strip()
+    model_name = env("GEMINI_MODEL", "gemini-3.5-flash-lite").strip()
 
     try:
         resp = client.models.generate_content(
@@ -171,15 +171,30 @@ def _generate_answer_from_gemini(
         return resp.text or ""
     except Exception as e:
         err_str = str(e)
+        # Fallback to high-speed gemini-3.5-flash-lite if primary model experiences 503 high demand or 404
+        if ("503" in err_str or "high demand" in err_str.lower() or "404" in err_str or "not found" in err_str.lower()) and model_name != "gemini-3.5-flash-lite":
+            logger.warning("Gemini model '%s' unavailable (%s); falling back to gemini-3.5-flash-lite.", model_name, err_str)
+            try:
+                fb_resp = client.models.generate_content(
+                    model="gemini-3.5-flash-lite",
+                    contents=prompt,
+                    config=types.GenerateContentConfig(temperature=0.0),
+                )
+                return fb_resp.text or ""
+            except Exception as fb_err:
+                logger.error("Gemini fallback also failed: %s", fb_err)
+
         if "API_KEY_INVALID" in err_str or "API key not valid" in err_str:
             raise RuntimeError(
                 "Your Gemini API key is invalid or not activated. "
                 "Please verify GEMINI_API_KEY in Render Environment Variables (from https://aistudio.google.com/apikey)."
             ) from e
+        if "timed out" in err_str.lower() or "timeout" in err_str.lower():
+            raise TimeoutError("Gemini API request timed out. Please try again.") from e
         if "404" in err_str or "not found" in err_str.lower():
             raise RuntimeError(
                 f"Gemini model '{model_name}' was not found (HTTP 404). "
-                "Please ensure GEMINI_MODEL=gemini-3.8-flash is configured in Render Environment Variables."
+                "Please ensure GEMINI_MODEL=gemini-3.5-flash-lite is configured in Render Environment Variables."
             ) from e
         raise
 

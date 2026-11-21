@@ -41,9 +41,15 @@ _is_ollama_available: Optional[bool] = None
 
 
 def is_ollama_reachable(cache_ttl_seconds: float = 30.0) -> bool:
-    """Checks if local Ollama is reachable with a fast 1.0s timeout, cached for cache_ttl_seconds."""
+    """Checks if local Ollama is reachable with a fast 1.0s timeout, cached for cache_ttl_seconds.
+    On Render or production deployments, immediately returns False without network attempts."""
     global _last_ollama_check_time, _is_ollama_available
     import time
+
+    # Immediately disable Ollama when deployed on Render or in production
+    if os.getenv("RENDER") or os.getenv("RENDER_SERVICE_ID") or os.getenv("APP_ENV") == "production":
+        _is_ollama_available = False
+        return False
 
     now = time.time()
     if _is_ollama_available is not None and (now - _last_ollama_check_time) < cache_ttl_seconds:

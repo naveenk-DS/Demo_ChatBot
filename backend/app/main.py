@@ -83,6 +83,7 @@ def health():
 @app.get("/api/providers")
 def get_providers():
     """Returns available LLM provider status without exposing secrets."""
+    gemini_model = env("GEMINI_MODEL", "gemini-3.5-flash-lite")
     return {
         "status": "success",
         "providers": {
@@ -94,8 +95,8 @@ def get_providers():
             },
             "gemini": {
                 "id": "gemini",
-                "name": "Google Gemini (3.8 Flash)",
-                "model": env("GEMINI_MODEL", "gemini-3.8-flash"),
+                "name": f"Google Gemini ({gemini_model})",
+                "model": gemini_model,
                 "configured": bool(env("GEMINI_API_KEY") or env("GOOGLE_API_KEY")),
                 "is_cloud": True,
             },
@@ -206,6 +207,17 @@ def chat(req: ChatRequest):
                     },
                     "properties": [],
                 }
+            elif not rag_res.get("success") and rag_res.get("error"):
+                err_msg = rag_res.get("error")
+                if "timed out" in err_msg.lower() or "timeout" in err_msg.lower():
+                    raise HTTPException(
+                        status_code=504,
+                        detail="The AI provider timed out while generating document specifications. Please try again."
+                    )
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"AI provider failed: {err_msg}"
+                )
 
         # Conversational understanding for multi-turn search & property inquiries
         history = [m.model_dump() for m in req.history]
@@ -316,9 +328,17 @@ def chat(req: ChatRequest):
             "images": [],
             "image_filter": None,
         }
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error("Chat request failed: %s", exc)
-        raise HTTPException(status_code=400, detail=str(exc))
+        err_msg = str(exc)
+        if "timed out" in err_msg.lower() or "timeout" in err_msg.lower():
+            raise HTTPException(
+                status_code=504,
+                detail="The AI provider took too long to respond. Please try again.",
+            )
+        raise HTTPException(status_code=500, detail=err_msg)
 
 @app.post("/api/enquiries")
 def enquiry(req: EnquiryRequest):

@@ -188,7 +188,7 @@ def _normalize_extracted(data: dict[str, Any], current_query: str = "") -> dict[
     return data
 
 
-DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
+DEFAULT_GEMINI_MODEL = env("GEMINI_MODEL", "gemini-3.5-flash-lite").strip()
 
 # Client instance caching to enable TCP/TLS keep-alive connection reuse
 _cached_gemini_client: Optional[Any] = None
@@ -198,13 +198,14 @@ _cached_openai_key: Optional[str] = None
 
 
 def get_gemini_client(api_key: str) -> Any:
-    """Returns reused Gemini client instance with keep-alive connections."""
+    """Returns reused Gemini client instance with keep-alive connections.
+    Note: google-genai types.HttpOptions.timeout expects MILLISECONDS (45000 ms = 45s)."""
     global _cached_gemini_client, _cached_gemini_key
     if _cached_gemini_client is not None and _cached_gemini_key == api_key:
         return _cached_gemini_client
     _cached_gemini_client = genai.Client(
         api_key=api_key,
-        http_options=types.HttpOptions(api_version="v1beta", timeout=25)
+        http_options=types.HttpOptions(api_version="v1beta", timeout=45000)
     )
     _cached_gemini_key = api_key
     return _cached_gemini_client
@@ -215,7 +216,7 @@ def get_openai_client(api_key: str) -> Any:
     global _cached_openai_client, _cached_openai_key
     if _cached_openai_client is not None and _cached_openai_key == api_key:
         return _cached_openai_client
-    _cached_openai_client = OpenAI(api_key=api_key, timeout=25)
+    _cached_openai_client = OpenAI(api_key=api_key, timeout=30)
     _cached_openai_key = api_key
     return _cached_openai_client
 
@@ -231,11 +232,26 @@ def _call_gemini_generate(client: Any, contents: Any, config: Any, model_name: s
         return result.text or ""
     except Exception as e:
         err_str = str(e)
+        # Fallback to high-speed gemini-3.5-flash-lite if primary model experiences 503 high demand spikes or 404
+        if ("503" in err_str or "high demand" in err_str.lower() or "404" in err_str or "not found" in err_str.lower()) and model_name != "gemini-3.5-flash-lite":
+            logger.warning("Gemini model '%s' unavailable (%s); falling back to gemini-3.5-flash-lite.", model_name, err_str)
+            try:
+                res_fallback = client.models.generate_content(
+                    model="gemini-3.5-flash-lite",
+                    contents=contents,
+                    config=config,
+                )
+                return res_fallback.text or ""
+            except Exception as fb_err:
+                logger.error("Gemini fallback also failed: %s", fb_err)
+
         if "API_KEY_INVALID" in err_str or "API key not valid" in err_str:
             raise RuntimeError(
                 "Your Gemini API key is invalid or not activated. "
                 "Please verify GEMINI_API_KEY in Render Environment Variables (from https://aistudio.google.com/apikey)."
             ) from e
+        if "timed out" in err_str.lower() or "timeout" in err_str.lower():
+            raise TimeoutError("Gemini API request timed out. Please try again.") from e
         if "404" in err_str or "not found" in err_str.lower():
             raise RuntimeError(
                 f"Gemini model '{model_name}' was not found (HTTP 404). "

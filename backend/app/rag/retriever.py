@@ -7,6 +7,7 @@ across any document collection and arbitrary metadata filters.
 from collections import Counter
 import logging
 import math
+import os
 from pathlib import Path
 import re
 from typing import Any, Optional, Union
@@ -18,6 +19,7 @@ from .store import (
     get_embedding,
     get_or_create_collection,
     get_vector_store,
+    is_ollama_reachable,
 )
 
 logger = logging.getLogger(__name__)
@@ -403,36 +405,40 @@ def hybrid_search(
     bm25_scores: dict[str, float] = {}
     records_by_id: dict[str, dict[str, Any]] = {}
 
-    # 1. Dense Vector Retrieval
-    try:
-        q_emb = get_embedding(clean_query)
-        n_fetch = min(max(top_k * 4, 25), total_records)
-        q_params: dict[str, Any] = {
-            "query_embeddings": [q_emb],
-            "n_results": n_fetch,
-            "include": ["documents", "metadatas", "distances"],
-        }
-        if chroma_where:
-            q_params["where"] = chroma_where
-
-        res = coll.query(**q_params)
-        d_ids = res.get("ids", [[]])[0]
-        d_docs = res.get("documents", [[]])[0]
-        d_metas = res.get("metadatas", [[]])[0]
-        d_dists = res.get("distances", [[]])[0]
-
-        logger.debug("--- DENSE SEARCH CANDIDATES (count=%d) ---", len(d_ids))
-        for rank, cid in enumerate(d_ids, start=1):
-            dense_ranks[cid] = rank
-            dist = float(d_dists[rank - 1]) if rank - 1 < len(d_dists) else 0.0
-            dense_distances[cid] = dist
-            records_by_id[cid] = {
-                "text": d_docs[rank - 1] if rank - 1 < len(d_docs) else "",
-                "meta": d_metas[rank - 1] if rank - 1 < len(d_metas) else {},
+    # 1. Dense Vector Retrieval (Only executed locally when Ollama is available; skipped on Render)
+    is_render = bool(os.getenv("RENDER") or os.getenv("RENDER_SERVICE_ID") or os.getenv("APP_ENV") == "production")
+    if not is_render and is_ollama_reachable():
+        try:
+            q_emb = get_embedding(clean_query)
+            n_fetch = min(max(top_k * 4, 25), total_records)
+            q_params: dict[str, Any] = {
+                "query_embeddings": [q_emb],
+                "n_results": n_fetch,
+                "include": ["documents", "metadatas", "distances"],
             }
-            logger.debug("  [Dense #%d] ID: %s | Distance: %.4f", rank, cid, dist)
-    except Exception as dense_err:
-        logger.warning("Dense vector retrieval failed (%s); proceeding with BM25 only.", dense_err)
+            if chroma_where:
+                q_params["where"] = chroma_where
+
+            res = coll.query(**q_params)
+            d_ids = res.get("ids", [[]])[0]
+            d_docs = res.get("documents", [[]])[0]
+            d_metas = res.get("metadatas", [[]])[0]
+            d_dists = res.get("distances", [[]])[0]
+
+            logger.debug("--- DENSE SEARCH CANDIDATES (count=%d) ---", len(d_ids))
+            for rank, cid in enumerate(d_ids, start=1):
+                dense_ranks[cid] = rank
+                dist = float(d_dists[rank - 1]) if rank - 1 < len(d_dists) else 0.0
+                dense_distances[cid] = dist
+                records_by_id[cid] = {
+                    "text": d_docs[rank - 1] if rank - 1 < len(d_docs) else "",
+                    "meta": d_metas[rank - 1] if rank - 1 < len(d_metas) else {},
+                }
+                logger.debug("  [Dense #%d] ID: %s | Distance: %.4f", rank, cid, dist)
+        except Exception as dense_err:
+            logger.warning("Dense vector retrieval failed (%s); proceeding with BM25 only.", dense_err)
+    else:
+        logger.debug("Skipping dense vector retrieval (Render deployment or Ollama unavailable); using BM25.")
 
     # 2. Dynamic BM25 Lexical Retrieval
     try:
