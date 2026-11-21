@@ -25,6 +25,37 @@ logger = logging.getLogger(__name__)
 DEFAULT_TOP_K: int = 5
 RRF_K: float = 60.0  # Standard Reciprocal Rank Fusion smoothing constant
 
+# In-memory BM25 index cache to avoid rebuilding index on every request
+_cached_bm25_index: Optional["DynamicBM25"] = None
+_cached_collection_count: int = -1
+_cached_collection_name: str = ""
+_cached_all_data: Optional[dict[str, Any]] = None
+
+
+def get_cached_bm25(coll: chromadb.Collection) -> tuple["DynamicBM25", dict[str, Any]]:
+    """Returns cached DynamicBM25 index for collection, rebuilding only if document count changed."""
+    global _cached_bm25_index, _cached_collection_count, _cached_collection_name, _cached_all_data
+    count = coll.count()
+    if (
+        _cached_bm25_index is not None
+        and _cached_all_data is not None
+        and _cached_collection_count == count
+        and _cached_collection_name == coll.name
+    ):
+        return _cached_bm25_index, _cached_all_data
+
+    all_data = coll.get(include=["documents", "metadatas"])
+    bm25_index = DynamicBM25(
+        ids=all_data["ids"],
+        documents=all_data["documents"],
+        metadatas=all_data["metadatas"],
+    )
+    _cached_bm25_index = bm25_index
+    _cached_all_data = all_data
+    _cached_collection_count = count
+    _cached_collection_name = coll.name
+    return bm25_index, all_data
+
 
 
 def tokenize(text: str) -> list[str]:
@@ -263,12 +294,7 @@ def bm25_search(
     )
 
     clean_query = query.strip()
-    all_data = coll.get(include=["documents", "metadatas"])
-    bm25_index = DynamicBM25(
-        ids=all_data["ids"],
-        documents=all_data["documents"],
-        metadatas=all_data["metadatas"],
-    )
+    bm25_index, all_data = get_cached_bm25(coll)
     scored = bm25_index.score(clean_query, where_filter=combined_filter)
 
     results: list[dict[str, Any]] = []
@@ -410,12 +436,7 @@ def hybrid_search(
 
     # 2. Dynamic BM25 Lexical Retrieval
     try:
-        all_data = coll.get(include=["documents", "metadatas"])
-        bm25_index = DynamicBM25(
-            ids=all_data["ids"],
-            documents=all_data["documents"],
-            metadatas=all_data["metadatas"],
-        )
+        bm25_index, all_data = get_cached_bm25(coll)
         scored_bm25 = bm25_index.score(clean_query, where_filter=combined_filter)
 
         logger.debug("--- BM25 SEARCH CANDIDATES (count=%d) ---", len(scored_bm25))

@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import Any
+from typing import Any, Optional
 import urllib.error
 import urllib.request
 from openai import OpenAI
@@ -190,6 +190,35 @@ def _normalize_extracted(data: dict[str, Any], current_query: str = "") -> dict[
 
 DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
 
+# Client instance caching to enable TCP/TLS keep-alive connection reuse
+_cached_gemini_client: Optional[Any] = None
+_cached_gemini_key: Optional[str] = None
+_cached_openai_client: Optional[Any] = None
+_cached_openai_key: Optional[str] = None
+
+
+def get_gemini_client(api_key: str) -> Any:
+    """Returns reused Gemini client instance with keep-alive connections."""
+    global _cached_gemini_client, _cached_gemini_key
+    if _cached_gemini_client is not None and _cached_gemini_key == api_key:
+        return _cached_gemini_client
+    _cached_gemini_client = genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(api_version="v1beta", timeout=25)
+    )
+    _cached_gemini_key = api_key
+    return _cached_gemini_client
+
+
+def get_openai_client(api_key: str) -> Any:
+    """Returns reused OpenAI client instance with keep-alive connections."""
+    global _cached_openai_client, _cached_openai_key
+    if _cached_openai_client is not None and _cached_openai_key == api_key:
+        return _cached_openai_client
+    _cached_openai_client = OpenAI(api_key=api_key, timeout=25)
+    _cached_openai_key = api_key
+    return _cached_openai_client
+
 
 def _call_gemini_generate(client: Any, contents: Any, config: Any, model_name: str) -> str:
     """Calls Gemini API with the configured model and surfaces precise error diagnostics."""
@@ -224,7 +253,7 @@ def extract(provider: str, history: list[dict[str, str]], current: str) -> dict[
                 "OPENAI_API_KEY is not configured in environment variables. "
                 "Please configure OPENAI_API_KEY in Render Environment Variables."
             )
-        client = OpenAI(api_key=key)
+        client = get_openai_client(key)
         try:
             result = client.chat.completions.create(
                 model=env("OPENAI_MODEL", "gpt-4.1-mini"),
@@ -249,7 +278,7 @@ def extract(provider: str, history: list[dict[str, str]], current: str) -> dict[
                 "GEMINI_API_KEY (or GOOGLE_API_KEY) is not configured in environment variables. "
                 "Please configure GEMINI_API_KEY in Render Environment Variables (from https://aistudio.google.com/apikey)."
             )
-        client = genai.Client(api_key=key, http_options=types.HttpOptions(api_version="v1beta"))
+        client = get_gemini_client(key)
         transcript = "\n".join(f'{m["role"]}: {m["content"]}' for m in turns)
         model_name = env("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip()
         content_text = _call_gemini_generate(

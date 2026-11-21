@@ -34,7 +34,31 @@ DEFAULT_STRUCTURED_COLLECTION: str = "real_estate_documents_v3_structured"
 COLLECTION_V3_STRUCTURED: str = "real_estate_documents_v3_structured"
 DEFAULT_OLLAMA_MODEL: str = "nomic-embed-text"
 DEFAULT_OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"
-DEFAULT_TIMEOUT: int = 30
+DEFAULT_TIMEOUT: int = 10
+
+_last_ollama_check_time: float = 0.0
+_is_ollama_available: Optional[bool] = None
+
+
+def is_ollama_reachable(cache_ttl_seconds: float = 30.0) -> bool:
+    """Checks if local Ollama is reachable with a fast 1.0s timeout, cached for cache_ttl_seconds."""
+    global _last_ollama_check_time, _is_ollama_available
+    import time
+
+    now = time.time()
+    if _is_ollama_available is not None and (now - _last_ollama_check_time) < cache_ttl_seconds:
+        return _is_ollama_available
+
+    url = f"{get_ollama_base_url()}/api/tags"
+    try:
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=1.0) as resp:
+            _is_ollama_available = (resp.status == 200)
+    except Exception:
+        _is_ollama_available = False
+
+    _last_ollama_check_time = now
+    return _is_ollama_available
 
 
 def get_default_chroma_dir() -> Path:
@@ -89,6 +113,8 @@ def get_embedding(text: str, model: Optional[str] = None) -> list[float]:
     """Generates a dense vector embedding for a single text using Ollama."""
     if not text or not text.strip():
         raise ValueError("Cannot generate embedding for empty text.")
+    if not is_ollama_reachable():
+        raise ConnectionError("Ollama service is not reachable on this host.")
     data = _post_ollama("/api/embeddings", {"model": model or get_embedding_model(), "prompt": text})
     emb = data.get("embedding")
     if not emb:

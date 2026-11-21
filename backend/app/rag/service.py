@@ -108,7 +108,7 @@ def _generate_answer_from_openai(
 ) -> str:
     """Generates an answer using OpenAI API if configured."""
     from ..config import env
-    from openai import OpenAI
+    from ..llm import get_openai_client
 
     key = env("OPENAI_API_KEY")
     if not key:
@@ -117,7 +117,7 @@ def _generate_answer_from_openai(
             "Please configure OPENAI_API_KEY in Render Environment Variables."
         )
 
-    client = OpenAI(api_key=key, timeout=timeout)
+    client = get_openai_client(key)
     try:
         resp = client.chat.completions.create(
             model=env("OPENAI_MODEL", "gpt-4.1-mini"),
@@ -148,7 +148,7 @@ def _generate_answer_from_gemini(
 ) -> str:
     """Generates an answer using Google Gemini API with the configured model."""
     from ..config import env
-    from google import genai
+    from ..llm import get_gemini_client
     from google.genai import types
 
     key = env("GEMINI_API_KEY") or env("GOOGLE_API_KEY")
@@ -158,7 +158,7 @@ def _generate_answer_from_gemini(
             "Please configure GEMINI_API_KEY in Render Environment Variables (from https://aistudio.google.com/apikey)."
         )
 
-    client = genai.Client(api_key=key, http_options=types.HttpOptions(api_version="v1beta", timeout=timeout))
+    client = get_gemini_client(key)
     prompt = f"{SYSTEM_PROMPT}\n\nRetrieved Property Documents Context:\n{prompt_context}\n\nQuestion:\n{query}"
     model_name = env("GEMINI_MODEL", "gemini-3.8-flash").strip()
 

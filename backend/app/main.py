@@ -133,22 +133,20 @@ def get_images(category: Optional[str] = None):
 @app.post("/api/chat")
 def chat(req: ChatRequest):
     try:
-        history = [m.model_dump() for m in req.history]
-        filters = understand(req.provider, history, req.message)
-        if req.filters:
-            explicit = req.filters.model_dump(exclude_unset=True, exclude_none=True)
-            if explicit:
-                merged = filters.model_dump()
-                merged.update(explicit)
-                filters = SearchFilters.model_validate(merged)
+        user_msg_lower = req.message.lower().strip()
 
-        # 1. Media requests (images, photos, walkthroughs, room visuals)
-        if filters.intent == "media_request":
+        # FAST-PATH 1: Media requests (images, photos, room visuals)
+        is_media = any(k in user_msg_lower for k in ["image", "images", "photo", "photos", "picture", "pictures", "virtual tour", "gallery"]) or (
+            any(user_msg_lower.startswith(p) or f" {p} " in user_msg_lower for p in ["show me", "show", "display", "view"])
+            and any(t in user_msg_lower for t in ["master bedroom", "bedroom", "bathroom", "kitchen", "balcony", "living", "dining", "entrance", "floor plan"])
+            and not any(k in user_msg_lower for k in ["dimension", "dimensions", "specification", "specifications", "size", "area", "sqft", "measure", "how many", "does the", "compare", "what are"])
+        )
+        if is_media:
             search_res = search_image_assets(req.message)
             return {
                 "status": "message",
                 "assistant_message": search_res["assistant_message"],
-                "filters": filters.model_dump(),
+                "filters": {"intent": "media_request"},
                 "properties": [],
                 "images": search_res["images"],
                 "image_filter": {
@@ -161,17 +159,63 @@ def chat(req: ChatRequest):
                 },
             }
 
-        # 2. Reset / Forget budget requests
-        user_msg_lower = req.message.lower()
+        # FAST-PATH 2: Reset / Forget budget requests
         if any(p in user_msg_lower for p in ["forget the budget", "forget budget", "ignore the budget", "ignore budget", "clear budget", "reset budget"]):
-            filters.min_price = None
-            filters.max_price = None
             return {
                 "status": "message",
                 "assistant_message": "Understood, I have cleared the budget filter. What property specifications or features would you like to explore?",
-                "filters": filters.model_dump(),
+                "filters": {"intent": "general_question", "min_price": None, "max_price": None},
                 "properties": [],
             }
+
+        # FAST-PATH 3: Unambiguous Document QA (specifications, dimensions, comparisons, room counts, entrance)
+        # Avoids making a redundant extra cloud LLM call just to classify intent!
+        has_doc_qa_keyword = any(k in user_msg_lower for k in [
+            "dimension", "dimensions", "specification", "specifications",
+            "entrance feature", "entrance features", "which is better", "compare 2bhk",
+            "compare 3bhk", "compare", "all three bedrooms", "three bedrooms", "five bedrooms",
+            "how many bedrooms", "does the 3bhk have", "does the 2bhk have"
+        ])
+        has_search_criteria = any(k in user_msg_lower for k in [
+            "lakh", "crore", "budget", "price", "under", "below", "above", "in chennai", "in bangalore",
+            "in mumbai", "in delhi", "in hyderabad", "for sale", "buy", "rent"
+        ])
+
+        if has_doc_qa_keyword and not has_search_criteria:
+            config_hint = None
+            has_2bhk = "2bhk" in user_msg_lower or "2 bedroom" in user_msg_lower or "two bedroom" in user_msg_lower
+            has_3bhk = "3bhk" in user_msg_lower or "three bedroom" in user_msg_lower or "3 bedroom" in user_msg_lower
+            if has_2bhk and not has_3bhk:
+                config_hint = "2BHK"
+            elif has_3bhk and not has_2bhk:
+                config_hint = "3BHK"
+
+            rag_res = answer_question(
+                req.message,
+                configuration=config_hint,
+                provider=req.provider,
+            )
+            if rag_res.get("success") and rag_res.get("answer"):
+                return {
+                    "status": "message",
+                    "assistant_message": rag_res.get("answer"),
+                    "sources": rag_res.get("sources", []),
+                    "filters": {
+                        "intent": "document_qa",
+                        "bhk": 2 if config_hint == "2BHK" else (3 if config_hint == "3BHK" else None),
+                    },
+                    "properties": [],
+                }
+
+        # Conversational understanding for multi-turn search & property inquiries
+        history = [m.model_dump() for m in req.history]
+        filters = understand(req.provider, history, req.message)
+        if req.filters:
+            explicit = req.filters.model_dump(exclude_unset=True, exclude_none=True)
+            if explicit:
+                merged = filters.model_dump()
+                merged.update(explicit)
+                filters = SearchFilters.model_validate(merged)
 
         # 3. Document QA (Specifications, dimensions, comparisons, room counts, entrance)
         if filters.intent == "document_qa":

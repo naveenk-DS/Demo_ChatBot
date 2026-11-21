@@ -210,12 +210,27 @@ export default function App() {
         setMessages(updatedMessages);
         setInput('');
         setBusy(true);
-        setBusyStatus(provider === 'ollama' ? 'Searching for your details, Just ahh Sec..' : 'Connecting to AI provider...');
+
+        const providerLabel = provider === 'gemini' ? 'Gemini 3.8 Flash' : (provider === 'openai' ? 'OpenAI GPT-4.1-mini' : 'Ollama');
+        setBusyStatus(`Connecting to ${providerLabel}...`);
+
+        const t1 = setTimeout(() => {
+            setBusyStatus('Retrieving verified property documents...');
+        }, 2200);
+        const t2 = setTimeout(() => {
+            setBusyStatus(`Synthesizing response with ${providerLabel}...`);
+        }, 5500);
+        const t3 = setTimeout(() => {
+            setBusyStatus('Finalizing answer from knowledge base...');
+        }, 14000);
 
         const historyPayload = messages.slice(-8).map((m) => ({
             role: m.role,
             content: m.content,
         }));
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 45000);
 
         try {
             const res = await fetch(`${API}/api/chat`, {
@@ -226,7 +241,13 @@ export default function App() {
                     history: historyPayload,
                     provider,
                 }),
+                signal: controller.signal,
             });
+
+            clearTimeout(timeoutId);
+            clearTimeout(t1);
+            clearTimeout(t2);
+            clearTimeout(t3);
 
             let data;
             const contentType = res.headers.get('content-type') || '';
@@ -288,8 +309,17 @@ export default function App() {
                 ]);
             }
         } catch (err) {
+            clearTimeout(timeoutId);
+            clearTimeout(t1);
+            clearTimeout(t2);
+            clearTimeout(t3);
+
             let errorText = err.message || 'Unknown network error';
-            if (errorText === 'Failed to fetch' || errorText.includes('Failed to fetch') || errorText.includes('NetworkError')) {
+            if (err.name === 'AbortError') {
+                errorText = `Request timed out after 45 seconds.\n\n` +
+                    `• **If on Render**: Free tier web services go to sleep when inactive and take ~50 seconds to boot up on the first request. The service is now awake; please click **Regenerate** to get an immediate response.\n` +
+                    `• **If running locally**: Ensure Ollama and your local server are active.`;
+            } else if (errorText === 'Failed to fetch' || errorText.includes('Failed to fetch') || errorText.includes('NetworkError')) {
                 const targetHost = API || window.location.origin;
                 errorText = `Unable to connect to backend server at **${targetHost}**.\n\n` +
                     `• **If on Render**: Free tier web services go to sleep when inactive and take ~50 seconds to boot up on the first request. Please wait a moment and retry.\n` +
@@ -303,6 +333,10 @@ export default function App() {
             };
             setMessages([...updatedMessages, errorMsg]);
         } finally {
+            clearTimeout(timeoutId);
+            clearTimeout(t1);
+            clearTimeout(t2);
+            clearTimeout(t3);
             setBusy(false);
         }
     };
