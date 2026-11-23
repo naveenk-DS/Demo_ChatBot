@@ -463,6 +463,23 @@ def hybrid_search(
     # 3. Reciprocal Rank Fusion (RRF)
     candidate_ids = set(dense_ranks.keys()) | set(bm25_ranks.keys())
     if not candidate_ids:
+        # If strict metadata filter (e.g. BHK configuration or category) returned nothing,
+        # gracefully fall back to unrestricted search across all documents so arbitrary PDFs are never blocked.
+        if configuration or category or source or property_name or filter_metadata:
+            logger.info("No candidates found with filters (%s); falling back to unrestricted document search for query '%s'.", combined_filter, clean_query)
+            return hybrid_search(
+                query=clean_query,
+                top_k=top_k,
+                configuration=None,
+                category=None,
+                source=None,
+                property_name=None,
+                filter_metadata=None,
+                rrf_k=rrf_k,
+                client=client,
+                collection=coll,
+                collection_name=collection_name,
+            )
         logger.warning("No candidates found by either Dense or BM25 retrieval for '%s'", clean_query)
         return []
 

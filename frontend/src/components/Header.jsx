@@ -12,6 +12,9 @@ export default function Header({
     sidebarOpen,
     backendOnline,
     apiBaseUrl = '',
+    darkMode = false,
+    setDarkMode,
+    onToggleViewMode,
 }) {
     return (
         <header className="app-header">
@@ -72,6 +75,30 @@ export default function Header({
                         </div>
                     )}
                 </div>
+
+                {onToggleViewMode && (
+                    <button
+                        type="button"
+                        className="header-action-btn concierge-switch-btn"
+                        onClick={onToggleViewMode}
+                        title="Switch to Concierge UI Demo"
+                    >
+                        <span className="action-icon">💬</span>
+                        <span className="btn-text">Concierge View</span>
+                    </button>
+                )}
+
+                {setDarkMode && (
+                    <button
+                        type="button"
+                        className={`header-action-btn theme-toggle-btn ${darkMode ? 'dark-active' : ''}`}
+                        onClick={() => setDarkMode(!darkMode)}
+                        title={darkMode ? 'Switch website to light background' : 'Switch website to dark background'}
+                    >
+                        <span className="action-icon">{darkMode ? '☀️' : '🌙'}</span>
+                        <span className="btn-text">{darkMode ? 'Light' : 'Dark'}</span>
+                    </button>
+                )}
 
                 <button
                     type="button"

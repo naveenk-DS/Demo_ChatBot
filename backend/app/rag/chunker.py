@@ -201,6 +201,8 @@ def chunk_documents(
             last_section_heading = "Overview"
 
         doc_prefix = _sanitize_name(source)
+        doc_id = doc.get("document_id") or doc_prefix
+        doc_type = doc.get("document_type", "document")
         prop_name = doc.get("property_name", "General Property")
         config = doc.get("configuration", "general")
 
@@ -234,6 +236,8 @@ def chunk_documents(
                     chunk_idx += 1
                     all_chunks.append({
                         "chunk_id": chunk_id,
+                        "document_id": doc_id,
+                        "document_type": doc_type,
                         "source": source,
                         "page": page,
                         "property_name": prop_name,
@@ -249,6 +253,8 @@ def chunk_documents(
                         chunk_idx += 1
                         all_chunks.append({
                             "chunk_id": chunk_id,
+                            "document_id": doc_id,
+                            "document_type": doc_type,
                             "source": source,
                             "page": page,
                             "property_name": prop_name,
@@ -264,6 +270,8 @@ def chunk_documents(
                 chunk_id = f"{doc_prefix}_p{page}_c{chunk_num}"
                 all_chunks.append({
                     "chunk_id": chunk_id,
+                    "document_id": doc_id,
+                    "document_type": doc_type,
                     "source": source,
                     "page": page,
                     "property_name": prop_name,

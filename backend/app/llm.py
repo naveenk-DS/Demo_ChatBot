@@ -18,7 +18,7 @@ Analyze the user's message and conversation history to accurately classify the i
 
 JSON Output Schema:
 {
-  "intent": "property_search" | "document_qa" | "media_request" | "contact_request" | "general_question",
+  "intent": "property_search" | "document_qa" | "media_request" | "contact_request" | "general_question" | "search_refinement",
   "location": string or null,
   "city": string or null,
   "bhk": integer or null,
@@ -32,10 +32,11 @@ JSON Output Schema:
 
 Intent Definitions:
 1. "property_search": User is actively looking to search or buy properties by budget, city, location, or BHK (e.g. "I am looking for a property around 69 lakhs", "In Chennai", "Show 2BHK below 80 lakhs").
-2. "document_qa": User is asking about property specifications, floor plans, room dimensions, entrance features, amenities, comparing 2BHK vs 3BHK, or checking bedroom counts (e.g. "What are the master bedroom dimensions?", "What are the entrance features?", "Does the 3BHK have five bedrooms?", "Give me details of all three bedrooms", "Compare 2BHK and 3BHK", "Which is better, 2BHK or 3BHK?").
+2. "document_qa": User is asking about property specifications, floor plans, room dimensions, entrance features, amenities, comparing 2BHK vs 3BHK, or checking bedroom counts (e.g. "What are the master bedroom dimensions?", "What are the entrance features?", "Does the 3BHK have five bedrooms?", "Give me details of all three bedrooms", "Compare 2BHK and 3BHK", "Which is better, 2BHK or 3BHK?", "What are the 2BHK specifications?", "Tell me about the 4BHK", "4BHK details").
 3. "media_request": User is asking for images, photos, videos, or visual displays of rooms or the property (e.g. "Show me bathroom images", "Show bedroom images", "Show kitchen images", "Show master bedroom", "Show balcony", "Show me the property images", "Show me images").
 4. "contact_request": User wants to schedule a site visit, request agent callback, or submit an inquiry.
-5. "general_question": Greetings, small talk, or requests to clear/reset filters (e.g. "Hello", "Forget the budget. I only want property specifications").
+5. "general_question": Greetings, small talk, or requests to clear/reset filters (e.g. "Hello", "Hi", "Thank you", "Forget the budget. I only want property specifications").
+6. "search_refinement": User is refining or narrowing a previous property search result without changing the core subject (e.g. "Cheaper ones", "East facing only", "Near metro", "Show more", "Filter by 3BHK", "Under 70 lakhs", "With a garden", "Smaller ones"). Use only when there was a prior property search in the conversation history.
 
 Context Handling & Clarification Rules:
 - For "property_search": Retain previously specified search criteria (city, location, budget, bhk) from history unless modified or reset.
@@ -130,31 +131,82 @@ def _normalize_extracted(data: dict[str, Any], current_query: str = "") -> dict[
         data["needs_clarification"] = False
         data["clarification_question"] = None
 
-    # Rule 3: Document QA (specifications, dimensions, comparisons, room counts, entrance)
+    # Rule 3: Document QA (specifications, dimensions, comparisons, room counts, entrance, arbitrary documents)
     elif any(k in query_lower for k in [
         "dimension", "dimensions", "specification", "specifications", "document detail", "document details",
         "master bedroom", "entrance feature", "entrance features", "entrance",
         "which is better", "compare 2bhk", "compare 3bhk", "compare", "floor plan", "script",
         "all three bedrooms", "three bedrooms", "five bedrooms", "how many bedrooms",
-        "does the 3bhk have", "does the 2bhk have", "does the 4bhk have", "balcony", "foyer", "amenities"
-    ]) or (re.search(r"\b[1-9]\s*bhk\b", query_lower) and any(w in query_lower for w in ["detail", "details", "info", "about", "spec", "plan", "document", "script"]) and not has_search_criteria):
+        "does the 3bhk have", "does the 2bhk have", "does the 4bhk have", "balcony", "foyer", "amenities",
+        "document", "pdf", "file", "agreement", "guideline", "guidelines", "rules", "policy", "policies",
+        "terms", "condition", "conditions", "pricing", "cost", "fee", "fees", "clause", "clauses",
+        "handbook", "brochure", "timeline", "possession", "maintenance", "security deposit"
+    ]) or (
+        re.search(r"\b[1-9]\s*bhk\b", query_lower)
+        and any(w in query_lower for w in ["detail", "details", "info", "about", "spec", "plan", "document", "script", "what are", "tell me", "give me"])
+        and not has_search_criteria
+    ):
         data["intent"] = "document_qa"
         data["needs_clarification"] = False
         data["clarification_question"] = None
 
-    # Rule 4: Map raw intent strings
+    # Rule 4a: Search refinement — user is narrowing a previous property search
+    elif any(k in query_lower for k in [
+        "cheaper", "more affordable", "lower price", "cheaper ones", "lower budget",
+        "east facing", "west facing", "north facing", "south facing",
+        "near metro", "near school", "near hospital", "near it park",
+        "show more", "more options", "other options", "different options",
+        "smaller", "bigger", "larger", "smaller area", "larger area",
+        "with garden", "garden", "with pool", "with parking", "with gym", "with clubhouse",
+        "ready to move", "under construction", "furnished", "unfurnished",
+        "refine", "filter", "narrow", "only", "just show", "only show"
+    ]) and raw_intent not in ("document_qa", "media_request", "contact_request", "general_question"):
+        data["intent"] = "search_refinement"
+        data["needs_clarification"] = False
+        data["clarification_question"] = None
+
+    # Rule 4b: Map raw intent strings
     elif raw_intent in ("media", "media_request", "image", "photo"):
         data["intent"] = "media_request"
     elif raw_intent in ("document", "doc", "document_qa", "spec", "specification", "specifications", "rag"):
         data["intent"] = "document_qa"
-    elif raw_intent in ("search", "find", "property_search", "buy", "rent"):
-        data["intent"] = "property_search"
-    elif raw_intent in ("general", "question", "general_question", "info", "faq", "greeting"):
-        data["intent"] = "general_question"
+    elif raw_intent in ("search_refinement", "refine", "refinement", "filter"):
+        data["intent"] = "search_refinement"
     elif raw_intent in ("contact", "enquiry", "inquiry", "contact_request", "visit"):
         data["intent"] = "contact_request"
-    else:
+    # Rule 5: Greeting / simple conversational messages — always general_question, check BEFORE raw_intent property_search mapping
+    elif any(k in query_lower for k in [
+        "hello", "hi", "hey", "good morning", "good afternoon", "good evening",
+        "thanks", "thank you", "ok", "okay", "alright", "got it", "great", "nice",
+        "who are you", "what can you do", "help me", "what is this", "what is estateai"
+    ]):
+        data["intent"] = "general_question"
+    elif raw_intent in ("general", "question", "general_question", "info", "faq", "greeting"):
+        data["intent"] = "general_question"
+    elif raw_intent in ("search", "find", "property_search", "buy", "rent") or any(k in query_lower for k in ["bhk", "crore", "lakh", "budget", "apartment", "villa", "flat", "buy", "house", "for sale"]):
         data["intent"] = "property_search"
+    else:
+        # Safe fallback: general_question instead of blindly triggering a property search
+        data["intent"] = "general_question"
+
+    # Deterministic parameter extraction for offline / fallback robustness
+    if data.get("intent") == "property_search":
+        if not data.get("bhk"):
+            bhk_m = re.search(r"\b([1-9])\s*bhk\b", query_lower)
+            if bhk_m:
+                data["bhk"] = int(bhk_m.group(1))
+        if not data.get("max_price"):
+            cr_m = re.search(r"(\d+(?:\.\d+)?)\s*crore", query_lower)
+            lk_m = re.search(r"(\d+(?:\.\d+)?)\s*lakh", query_lower)
+            if cr_m:
+                data["max_price"] = int(float(cr_m.group(1)) * 10000000)
+            elif lk_m:
+                data["max_price"] = int(float(lk_m.group(1)) * 100000)
+        if not data.get("location"):
+            for loc in ["omr", "sholinganallur", "kelambakkam", "perungudi", "velachery", "guindy", "porur", "anna nagar"]:
+                if loc in query_lower:
+                    data["location"] = loc.upper() if loc == "omr" else loc.title()
+                    break
 
     # Convert empty/sentinel strings for optional numeric fields to None
     for k in ("bhk", "min_price", "max_price"):
@@ -299,16 +351,20 @@ def extract(provider: str, history: list[dict[str, str]], current: str) -> dict[
                 "GEMINI_API_KEY (or GOOGLE_API_KEY) is not configured in environment variables. "
                 "Please configure GEMINI_API_KEY in Render Environment Variables (from https://aistudio.google.com/apikey)."
             )
-        client = get_gemini_client(key)
-        transcript = "\n".join(f'{m["role"]}: {m["content"]}' for m in turns)
-        model_name = env("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip()
-        content_text = _call_gemini_generate(
-            client=client,
-            contents=PROMPT + "\nConversation:\n" + transcript,
-            config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0),
-            model_name=model_name,
-        )
-        return _normalize_extracted(json.loads(content_text or "{}"), current)
+        try:
+            client = get_gemini_client(key)
+            transcript = "\n".join(f'{m["role"]}: {m["content"]}' for m in turns)
+            model_name = env("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip()
+            content_text = _call_gemini_generate(
+                client=client,
+                contents=PROMPT + "\nConversation:\n" + transcript,
+                config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0),
+                model_name=model_name,
+            )
+            return _normalize_extracted(json.loads(content_text or "{}"), current)
+        except Exception as gemini_err:
+            logger.warning("Gemini extraction failed (%s); using deterministic extraction fallback.", gemini_err)
+            return _normalize_extracted({}, current)
 
     if provider == "ollama":
         base_url = env("OLLAMA_BASE_URL", DEFAULT_OLLAMA_URL).rstrip("/")

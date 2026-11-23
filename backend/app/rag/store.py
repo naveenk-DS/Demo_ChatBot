@@ -286,15 +286,18 @@ def sync_pdf_documents(
             if m and m.get("source"):
                 existing_sources.add(m["source"])
 
-    pdf_files = [p.name for p in pdf_dir.glob("*.pdf")]
-    missing_pdfs = [p for p in pdf_files if p not in existing_sources]
+    supported_patterns = ("*.pdf", "*.txt", "*.md")
+    disk_files = []
+    for pat in supported_patterns:
+        disk_files.extend([p.name for p in pdf_dir.glob(pat)])
+    missing_docs = [p for p in disk_files if p not in existing_sources]
 
-    if not missing_pdfs:
+    if not missing_docs:
         return {"status": "up_to_date", "new_added": 0, "collection_count": total_count}
 
-    logger.info("Detected %d new PDF(s) to ingest: %s", len(missing_pdfs), missing_pdfs)
+    logger.info("Detected %d new document(s) to ingest: %s", len(missing_docs), missing_docs)
     all_docs = load_pdf_documents(pdf_dir=pdf_dir)
-    docs_to_ingest = [d for d in all_docs if d.get("source") in missing_pdfs]
+    docs_to_ingest = [d for d in all_docs if d.get("source") in missing_docs]
     chunks = chunk_documents(docs_to_ingest, structured=True)
 
     result = add_chunks(

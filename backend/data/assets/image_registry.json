@@ -6,14 +6,15 @@
     "file_type": "image/jpeg",
     "extension": ".jpg",
     "file_size_bytes": 218056,
-    "ingestion_date": "2026-11-23T07:14:09.053036+00:00",
+    "ingestion_date": "2026-11-23T13:44:47.580166+00:00",
     "category": "bathroom",
     "property_name": "Aquagrove",
     "configuration": "general",
     "associated_documents": [
       "2BHK + 2T Model House Script - Casagrand Aquagrove.pdf",
       "3BHK + 3T Model House Script - Casagrand Aquagrove.pdf",
-      "4BHK_Model_House_Script_Sample.pdf"
+      "4BHK_Model_House_Script_Sample.pdf",
+      "Community_Guidelines_And_Clubhouse_Rules.pdf"
     ]
   },
   {
@@ -23,14 +24,15 @@
     "file_type": "image/jpeg",
     "extension": ".jpg",
     "file_size_bytes": 7616,
-    "ingestion_date": "2026-11-23T07:14:09.056239+00:00",
+    "ingestion_date": "2026-11-23T13:44:47.581166+00:00",
     "category": "bathroom",
     "property_name": "Aquagrove",
     "configuration": "general",
     "associated_documents": [
       "2BHK + 2T Model House Script - Casagrand Aquagrove.pdf",
       "3BHK + 3T Model House Script - Casagrand Aquagrove.pdf",
-      "4BHK_Model_House_Script_Sample.pdf"
+      "4BHK_Model_House_Script_Sample.pdf",
+      "Community_Guidelines_And_Clubhouse_Rules.pdf"
     ]
   },
   {
@@ -40,14 +42,15 @@
     "file_type": "image/jpeg",
     "extension": ".jpg",
     "file_size_bytes": 20291,
-    "ingestion_date": "2026-11-23T07:14:09.057835+00:00",
+    "ingestion_date": "2026-11-23T13:44:47.581166+00:00",
     "category": "bedroom",
     "property_name": "Aquagrove",
     "configuration": "general",
     "associated_documents": [
       "2BHK + 2T Model House Script - Casagrand Aquagrove.pdf",
       "3BHK + 3T Model House Script - Casagrand Aquagrove.pdf",
-      "4BHK_Model_House_Script_Sample.pdf"
+      "4BHK_Model_House_Script_Sample.pdf",
+      "Community_Guidelines_And_Clubhouse_Rules.pdf"
     ]
   },
   {
@@ -57,14 +60,15 @@
     "file_type": "image/jpeg",
     "extension": ".jpg",
     "file_size_bytes": 24622,
-    "ingestion_date": "2026-11-23T07:14:09.057835+00:00",
+    "ingestion_date": "2026-11-23T13:44:47.582166+00:00",
     "category": "bedroom",
     "property_name": "Aquagrove",
     "configuration": "general",
     "associated_documents": [
       "2BHK + 2T Model House Script - Casagrand Aquagrove.pdf",
       "3BHK + 3T Model House Script - Casagrand Aquagrove.pdf",
-      "4BHK_Model_House_Script_Sample.pdf"
+      "4BHK_Model_House_Script_Sample.pdf",
+      "Community_Guidelines_And_Clubhouse_Rules.pdf"
     ]
   }
 ]

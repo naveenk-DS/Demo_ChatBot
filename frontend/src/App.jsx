@@ -6,6 +6,8 @@ import ChatMessage from './components/ChatMessage';
 import ChatInput from './components/ChatInput';
 import PropertyResults from './components/PropertyResults';
 import EnquiryModal from './components/EnquiryModal';
+import FloatingChatWidget from './components/FloatingChatWidget';
+import ConciergeWidget from './components/ConciergeWidget';
 
 export function getApiBaseUrl() {
     // 1. Check Vite build-time environment variables
@@ -66,6 +68,37 @@ export default function App() {
     const [imageAssets, setImageAssets] = useState([]);
     const [allImageAssets, setAllImageAssets] = useState([]);
     const [imageFilter, setImageFilter] = useState(null);
+    const [darkMode, setDarkMode] = useState(() => {
+        try {
+            return localStorage.getItem('estateai_dark_mode') === 'true';
+        } catch {
+            return false;
+        }
+    });
+
+    const [viewMode, setViewMode] = useState(() => {
+        try {
+            return localStorage.getItem('estateai_view_mode') || 'concierge';
+        } catch {
+            return 'concierge';
+        }
+    });
+
+    useEffect(() => {
+        try {
+            localStorage.setItem('estateai_view_mode', viewMode);
+        } catch {}
+    }, [viewMode]);
+    useEffect(() => {
+        try {
+            localStorage.setItem('estateai_dark_mode', darkMode);
+        } catch {}
+        if (darkMode) {
+            document.body.classList.add('dark-theme');
+        } else {
+            document.body.classList.remove('dark-theme');
+        }
+    }, [darkMode]);
 
     // Conversations history in localStorage
     const [conversations, setConversations] = useState(() => {
@@ -160,6 +193,13 @@ export default function App() {
         setInput('');
         setActiveChatId(null);
         setNotice(null);
+    };
+
+    // Clear messages within active conversation without destroying session
+    const handleClearMessages = () => {
+        setMessages([]);
+        setProperties([]);
+        setImageFilter(null);
     };
 
     // Reset image gallery filter to display all available assets
@@ -262,26 +302,29 @@ export default function App() {
                 throw new Error(data.detail || `Server error (HTTP ${res.status})`);
             }
 
+            const receivedProperties = data.properties || [];
+            const receivedImages = data.images || [];
+            const receivedImageFilter = data.image_filter || null;
+
             const assistantMsg = {
                 role: 'assistant',
                 content: data.assistant_message || 'Search complete.',
                 timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
                 sources: data.sources || [],
+                properties: receivedProperties,
+                images: receivedImages,
+                imageFilter: receivedImageFilter,
             };
 
             const finalMessages = [...updatedMessages, assistantMsg];
             setMessages(finalMessages);
 
-            const receivedProperties = data.properties || [];
             setProperties(receivedProperties);
 
-            // Dynamic Context-Aware Image Retrieval handling
+            // Per user requirement: Do not use the existing right-side media panel for chatbot image results.
+            // Image results appear directly inside the chatbot popup conversation.
             if (data.image_filter !== undefined) {
                 setImageFilter(data.image_filter);
-                setImageAssets(data.images || []);
-            } else if (data.images && data.images.length > 0) {
-                setImageAssets(data.images);
-                setImageFilter(null);
             }
 
             // Update or create in conversation history
@@ -391,8 +434,64 @@ export default function App() {
         }
     };
 
+    if (viewMode === 'concierge') {
+        return (
+            <div className="concierge-app-root">
+                {/* Notification Toast */}
+                {notice && (
+                    <div className={`notification-toast ${notice.type} animate-slide-down`}>
+                        <span>{notice.text}</span>
+                        <button
+                            type="button"
+                            className="toast-close-btn"
+                            onClick={() => setNotice(null)}
+                        >
+                            ×
+                        </button>
+                    </div>
+                )}
+
+                <ConciergeWidget
+                    messages={messages}
+                    onSend={handleSend}
+                    isBusy={busy}
+                    busyStatus={busyStatus}
+                    provider={provider}
+                    setProvider={setProvider}
+                    onSelectProperty={(prop) => {
+                        setSelectedProperty(prop);
+                        setNotice(null);
+                    }}
+                    onSendBrochure={(prop) => {
+                        setSelectedProperty(prop);
+                        setForm((prev) => ({
+                            ...prev,
+                            message: `Please send the official project brochure and pricing sheet for ${prop.property_name || 'this property'}.`,
+                        }));
+                    }}
+                    onStartOver={handleNewChat}
+                    apiBaseUrl={API}
+                    onToggleViewMode={() => setViewMode('dashboard')}
+                    isStandalone={true}
+                />
+
+                {/* Property Contact & Enquiry Modal */}
+                {selectedProperty && (
+                    <EnquiryModal
+                        selectedProperty={selectedProperty}
+                        form={form}
+                        setForm={setForm}
+                        onSubmit={handleEnquirySubmit}
+                        onClose={() => setSelectedProperty(null)}
+                        isSubmitting={isSubmitting}
+                    />
+                )}
+            </div>
+        );
+    }
+
     return (
-        <div className="estate-app-container">
+        <div className={`estate-app-container ${darkMode ? 'dark-theme' : ''}`}>
             {/* Top Navigation Header */}
             <Header
                 provider={provider}
@@ -402,6 +501,9 @@ export default function App() {
                 sidebarOpen={sidebarOpen}
                 backendOnline={backendOnline}
                 apiBaseUrl={API}
+                darkMode={darkMode}
+                setDarkMode={setDarkMode}
+                onToggleViewMode={() => setViewMode('concierge')}
             />
 
             {/* Notification Toast */}
@@ -508,6 +610,24 @@ export default function App() {
                     isSubmitting={isSubmitting}
                 />
             )}
+
+            {/* Compact Floating Chatbot Widget (Matching AWS Ask AWS Reference) */}
+            <FloatingChatWidget
+                messages={messages}
+                properties={properties}
+                onSend={handleSend}
+                isBusy={busy}
+                busyStatus={busyStatus}
+                onSelectProperty={(prop) => {
+                    setSelectedProperty(prop);
+                    setNotice(null);
+                }}
+                onClearMessages={handleClearMessages}
+                onNewChat={handleNewChat}
+                darkMode={darkMode}
+                setDarkMode={setDarkMode}
+                apiBaseUrl={API}
+            />
         </div>
     );
 }

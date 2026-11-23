@@ -26,7 +26,7 @@ class ChatMessage(BaseModel):
 
 
 class SearchFilters(BaseModel):
-    intent: Literal["property_search", "document_qa", "media_request", "general_question", "contact_request"] = "property_search"
+    intent: Literal["property_search", "document_qa", "media_request", "general_question", "contact_request", "search_refinement"] = "property_search"
     location: Optional[str] = Field(default=None, max_length=100)
     city: Optional[str] = Field(default=None, max_length=100)
     bhk: Optional[int] = Field(default=None, ge=1, le=10)

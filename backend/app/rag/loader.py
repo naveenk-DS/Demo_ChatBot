@@ -20,13 +20,14 @@ import re
 
 def extract_document_metadata(file_path: Union[str, Path], first_page_text: str = "") -> dict[str, Any]:
     """
-    Dynamically infers document metadata (property_name, configuration, document_type)
-    from filename and text patterns without hardcoding specific property names.
+    Dynamically infers document metadata (document_id, property_name, configuration, document_type)
+    from filename and text patterns without hardcoding specific property names or configurations.
     """
     path = Path(file_path)
     stem = path.stem
     stem_clean = stem.replace("_", " ")
     lower_stem = stem_clean.lower()
+    doc_id = re.sub(r"[^a-zA-Z0-9]+", "_", stem).strip("_").lower() or "doc"
     first_lines = [line.strip() for line in first_page_text.split("\n") if line.strip()][:3]
 
     # 1. Dynamic Configuration extraction (e.g. 1BHK, 2BHK, 3BHK, 4BHK, Studio, Penthouse, Villa, Plot)
@@ -37,7 +38,7 @@ def extract_document_metadata(file_path: Union[str, Path], first_page_text: str 
     )
     configuration = re.sub(r"\s+", "", config_match.group(1).upper()) if config_match else "general"
 
-    # 2. Dynamic Property Name extraction from delimiter or first heading
+    # 2. Dynamic Property/Document Name extraction from delimiter or first heading
     property_name = ""
     parts = re.split(r"[-–—|]", stem_clean)
     if len(parts) > 1:
@@ -62,16 +63,17 @@ def extract_document_metadata(file_path: Union[str, Path], first_page_text: str 
     # Clean out any developer/builder prefixes like 'Casagrand' or 'Casa grand'
     property_name = re.sub(r"(?i)\bcasa\s*grand\b", "", property_name).strip(" -–—|,")
     if not property_name:
-        property_name = "Model House"
+        property_name = re.sub(r"[_\-]+", " ", stem).strip().title()
 
     # 3. Dynamic Document Type detection
     doc_type = "document"
-    for candidate_type in ("brochure", "script", "floor_plan", "specification", "pricing", "handbook"):
+    for candidate_type in ("brochure", "script", "floor_plan", "specification", "pricing", "handbook", "agreement", "guideline", "policy", "rules"):
         if candidate_type in lower_stem:
             doc_type = candidate_type
             break
 
     return {
+        "document_id": doc_id,
         "property_name": property_name,
         "configuration": configuration,
         "document_type": doc_type,
@@ -134,15 +136,41 @@ def load_pdf_documents(pdf_dir: Optional[Union[str, Path]] = None) -> list[dict[
         logger.warning("Specified PDF path is not a directory: %s", target_dir)
         return []
 
-    pdf_files = sorted(target_dir.glob("*.pdf"))
-    if not pdf_files:
-        logger.warning("No PDF files found in directory: %s", target_dir)
+    supported_extensions = ("*.pdf", "*.txt", "*.md")
+    all_files = []
+    for ext in supported_extensions:
+        all_files.extend(target_dir.glob(ext))
+    all_files = sorted(all_files, key=lambda p: p.name.lower())
+
+    if not all_files:
+        logger.warning("No supported files (*.pdf, *.txt, *.md) found in directory: %s", target_dir)
         return []
 
-    logger.info("Found %d PDF file(s) in %s", len(pdf_files), target_dir)
+    logger.info("Found %d document file(s) in %s", len(all_files), target_dir)
     documents: list[dict[str, Any]] = []
 
-    for file_path in pdf_files:
+    for file_path in all_files:
+        ext = file_path.suffix.lower()
+        if ext in (".txt", ".md"):
+            logger.info("Processing text document: %s", file_path.name)
+            try:
+                text_content = file_path.read_text(encoding="utf-8", errors="replace").strip()
+                if not text_content:
+                    continue
+                meta = extract_document_metadata(file_path, text_content[:500])
+                documents.append({
+                    "source": file_path.name,
+                    "document_id": meta["document_id"],
+                    "page": 1,
+                    "text": text_content,
+                    "property_name": meta["property_name"],
+                    "configuration": meta["configuration"],
+                    "document_type": meta["document_type"] or "document",
+                })
+            except Exception as txt_err:
+                logger.error("Failed to read text file '%s': %s", file_path.name, txt_err)
+            continue
+
         logger.info("Processing PDF: %s", file_path.name)
         try:
             with fitz.open(file_path) as doc:
@@ -151,7 +179,11 @@ def load_pdf_documents(pdf_dir: Optional[Union[str, Path]] = None) -> list[dict[
 
                 # Extract document-level metadata from page 1 and filename
                 doc_first_text = doc.load_page(0).get_text("text").strip() if page_count > 0 else ""
-                doc_prop_name, doc_config = extract_property_and_config(file_path.name, doc_first_text)
+                doc_meta = extract_document_metadata(file_path, doc_first_text)
+                doc_prop_name = doc_meta["property_name"]
+                doc_config = doc_meta["configuration"]
+                doc_id = doc_meta["document_id"]
+                doc_type = doc_meta["document_type"]
 
                 for page_idx in range(page_count):
                     try:
@@ -163,16 +195,20 @@ def load_pdf_documents(pdf_dir: Optional[Union[str, Path]] = None) -> list[dict[
                             continue
 
                         # Inherit document-level metadata or specialize if page mentions distinct config
-                        prop_name, config = extract_property_and_config(file_path.name, text)
+                        page_meta = extract_document_metadata(file_path, text)
+                        prop_name = page_meta["property_name"]
+                        config = page_meta["configuration"]
                         final_prop = prop_name if prop_name and prop_name != "Bathroom 2" else doc_prop_name
                         final_config = config if config and config != "general" else doc_config
 
                         documents.append({
                             "source": file_path.name,
+                            "document_id": doc_id,
                             "page": page_idx + 1,  # 1-indexed human-readable numbering
                             "text": text,
                             "property_name": final_prop,
                             "configuration": final_config,
+                            "document_type": doc_type,
                         })
                         extracted_pages += 1
                     except Exception as page_err:
