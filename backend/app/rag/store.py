@@ -129,9 +129,14 @@ def get_embedding(text: str, model: Optional[str] = None) -> list[float]:
 
 
 def get_embeddings(texts: list[str], model: Optional[str] = None) -> list[list[float]]:
-    """Generates embeddings for multiple texts using batch or fallback sequential calls."""
+    """Generates embeddings for multiple texts using batch or fallback sequential calls.
+    If Ollama is not reachable, provides 768-dim float placeholder vectors so documents are stored
+    in ChromaDB and immediately retrievable via Dynamic BM25 Okapi lexical search."""
     if not texts:
         return []
+    if not is_ollama_reachable():
+        logger.info("Ollama is not reachable: using 768-dim placeholder vectors for %d chunks (enables BM25 retrieval).", len(texts))
+        return [[0.0] * 768 for _ in texts]
     target_model = model or get_embedding_model()
     try:
         data = _post_ollama("/api/embed", {"model": target_model, "input": texts})
@@ -251,4 +256,61 @@ def get_collection_status(
         "record_count": coll.count(),
         "persist_directory": str(path),
         "directory_exists": path.exists(),
+    }
+
+
+def sync_pdf_documents(
+    collection_name: str = DEFAULT_STRUCTURED_COLLECTION,
+    client: Optional[chromadb.PersistentClient] = None,
+) -> dict[str, Any]:
+    """
+    Automatically detects any new or uningested PDF files in pdf/ directory and
+    ingests them into the specified ChromaDB collection with zero manual intervention.
+    """
+    from .loader import load_pdf_documents, get_default_pdf_dir
+    from .chunker import chunk_documents
+
+    pdf_dir = get_default_pdf_dir()
+    if not pdf_dir.exists():
+        return {"status": "no_pdf_dir", "new_added": 0}
+
+    db_client = client or get_vector_store()
+    coll = db_client.get_or_create_collection(name=collection_name, metadata={"hnsw:space": "cosine"})
+
+    # Check which PDF source files already exist in collection
+    existing_sources = set()
+    total_count = coll.count()
+    if total_count > 0:
+        existing_data = coll.get(include=["metadatas"])
+        for m in existing_data.get("metadatas", []):
+            if m and m.get("source"):
+                existing_sources.add(m["source"])
+
+    pdf_files = [p.name for p in pdf_dir.glob("*.pdf")]
+    missing_pdfs = [p for p in pdf_files if p not in existing_sources]
+
+    if not missing_pdfs:
+        return {"status": "up_to_date", "new_added": 0, "collection_count": total_count}
+
+    logger.info("Detected %d new PDF(s) to ingest: %s", len(missing_pdfs), missing_pdfs)
+    all_docs = load_pdf_documents(pdf_dir=pdf_dir)
+    docs_to_ingest = [d for d in all_docs if d.get("source") in missing_pdfs]
+    chunks = chunk_documents(docs_to_ingest, structured=True)
+
+    result = add_chunks(
+        chunks=chunks,
+        client=db_client,
+        collection=coll,
+        collection_name=collection_name,
+    )
+    logger.info(
+        "Auto-sync ingested %d chunks from new PDF(s). Total collection count: %d",
+        result.get("new_added", 0),
+        coll.count(),
+    )
+    return {
+        "status": "ingested",
+        "new_sources": missing_pdfs,
+        "new_added": result.get("new_added", 0),
+        "collection_count": coll.count(),
     }

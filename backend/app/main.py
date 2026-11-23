@@ -1,4 +1,5 @@
 import logging
+import re
 from typing import Optional
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
@@ -12,9 +13,42 @@ from .sql_validator import validate_generated_sql
 from .athena import run_query
 from .enquiries import save_enquiry
 from .rag.service import answer_question
+from .rag.store import sync_pdf_documents
 from .rag.image_assets import list_image_assets, ingest_image_assets, get_image_status_message, search_image_assets
 
 logger = logging.getLogger(__name__)
+
+# Synchronize any newly added PDF documents into ChromaDB on startup
+try:
+    sync_pdf_documents()
+except Exception as _sync_err:
+    logger.debug("Initial PDF sync skipped: %s", _sync_err)
+
+
+def extract_bhk_config(text: str, fallback_bhk: Optional[int] = None) -> Optional[str]:
+    """Dynamically extracts target BHK unit configuration (e.g. 1BHK, 2BHK, 3BHK, 4BHK).
+    Returns None if comparing multiple BHKs or if no specific BHK is mentioned."""
+    lower = text.lower()
+    matches = set(re.findall(r"\b([1-9])\s*bhk\b", lower))
+    if len(matches) == 1:
+        return f"{matches.pop()}BHK"
+    if len(matches) > 1:
+        # Comparing multiple BHKs
+        return None
+
+    word_to_num = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
+    bedroom_matches = set()
+    for word, num in word_to_num.items():
+        if f"{word} bedroom" in lower or f"{num} bedroom" in lower:
+            bedroom_matches.add(num)
+    if len(bedroom_matches) == 1:
+        return f"{bedroom_matches.pop()}BHK"
+    if len(bedroom_matches) > 1:
+        return None
+
+    if fallback_bhk and 1 <= fallback_bhk <= 9:
+        return f"{fallback_bhk}BHK"
+    return None
 
 app = FastAPI(title="Real Estate AI Demo API")
 
@@ -175,41 +209,39 @@ def chat(req: ChatRequest):
                 "properties": [],
             }
 
-        # FAST-PATH 3: Unambiguous Document QA (specifications, dimensions, comparisons, room counts, entrance)
+        # FAST-PATH 3: Unambiguous Document QA (specifications, dimensions, comparisons, room counts, entrance, document details)
         # Avoids making a redundant extra cloud LLM call just to classify intent!
         has_doc_qa_keyword = any(k in user_msg_lower for k in [
-            "dimension", "dimensions", "specification", "specifications",
+            "dimension", "dimensions", "specification", "specifications", "document detail", "document details",
             "entrance feature", "entrance features", "which is better", "compare 2bhk",
-            "compare 3bhk", "compare", "all three bedrooms", "three bedrooms", "five bedrooms",
-            "how many bedrooms", "does the 3bhk have", "does the 2bhk have"
-        ])
+            "compare 3bhk", "compare", "all three bedrooms", "three bedrooms", "five bedrooms", "four bedrooms",
+            "how many bedrooms", "does the 3bhk have", "does the 2bhk have", "does the 4bhk have",
+            "script", "floor plan", "amenities", "amenity"
+        ]) or (
+            bool(re.search(r"\b[1-9]\s*bhk\b", user_msg_lower))
+            and any(w in user_msg_lower for w in ["detail", "details", "info", "information", "script", "doc", "document", "spec", "about", "tell me about"])
+        )
         has_search_criteria = any(k in user_msg_lower for k in [
             "lakh", "crore", "budget", "price", "under", "below", "above", "in chennai", "in bangalore",
             "in mumbai", "in delhi", "in hyderabad", "for sale", "buy", "rent"
         ])
 
         if has_doc_qa_keyword and not has_search_criteria:
-            config_hint = None
-            has_2bhk = "2bhk" in user_msg_lower or "2 bedroom" in user_msg_lower or "two bedroom" in user_msg_lower
-            has_3bhk = "3bhk" in user_msg_lower or "three bedroom" in user_msg_lower or "3 bedroom" in user_msg_lower
-            if has_2bhk and not has_3bhk:
-                config_hint = "2BHK"
-            elif has_3bhk and not has_2bhk:
-                config_hint = "3BHK"
-
+            config_hint = extract_bhk_config(user_msg_lower)
             rag_res = answer_question(
                 req.message,
                 configuration=config_hint,
                 provider=req.provider,
             )
             if rag_res.get("success") and rag_res.get("answer"):
+                bhk_num = int(config_hint[0]) if config_hint and config_hint[0].isdigit() else None
                 return {
                     "status": "message",
                     "assistant_message": rag_res.get("answer"),
                     "sources": rag_res.get("sources", []),
                     "filters": {
                         "intent": "document_qa",
-                        "bhk": 2 if config_hint == "2BHK" else (3 if config_hint == "3BHK" else None),
+                        "bhk": bhk_num,
                     },
                     "properties": [],
                 }
@@ -257,18 +289,8 @@ def chat(req: ChatRequest):
         # 3. Document QA (Specifications, dimensions, comparisons, room counts, entrance)
         if filters.intent == "document_qa":
             try:
-                # Configuration hint: only pass if specifically one config is requested
-                config_hint = None
-                has_2bhk = "2bhk" in user_msg_lower or "2 bedroom" in user_msg_lower or "two bedroom" in user_msg_lower
-                has_3bhk = "3bhk" in user_msg_lower or "three bedroom" in user_msg_lower or "3 bedroom" in user_msg_lower
-                if has_2bhk and not has_3bhk:
-                    config_hint = "2BHK"
-                elif has_3bhk and not has_2bhk:
-                    config_hint = "3BHK"
-                elif filters.bhk == 2 and not has_3bhk:
-                    config_hint = "2BHK"
-                elif filters.bhk == 3 and not has_2bhk:
-                    config_hint = "3BHK"
+                # Configuration hint: dynamically detect single BHK target
+                config_hint = extract_bhk_config(user_msg_lower, fallback_bhk=filters.bhk)
 
                 rag_res = answer_question(
                     req.message,

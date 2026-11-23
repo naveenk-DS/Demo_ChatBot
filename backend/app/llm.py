@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from typing import Any, Optional
 import urllib.error
 import urllib.request
@@ -131,12 +132,12 @@ def _normalize_extracted(data: dict[str, Any], current_query: str = "") -> dict[
 
     # Rule 3: Document QA (specifications, dimensions, comparisons, room counts, entrance)
     elif any(k in query_lower for k in [
-        "dimension", "dimensions", "specification", "specifications",
+        "dimension", "dimensions", "specification", "specifications", "document detail", "document details",
         "master bedroom", "entrance feature", "entrance features", "entrance",
-        "which is better", "compare 2bhk", "compare 3bhk", "compare",
+        "which is better", "compare 2bhk", "compare 3bhk", "compare", "floor plan", "script",
         "all three bedrooms", "three bedrooms", "five bedrooms", "how many bedrooms",
-        "does the 3bhk have", "does the 2bhk have", "balcony", "foyer", "amenities"
-    ]):
+        "does the 3bhk have", "does the 2bhk have", "does the 4bhk have", "balcony", "foyer", "amenities"
+    ]) or (re.search(r"\b[1-9]\s*bhk\b", query_lower) and any(w in query_lower for w in ["detail", "details", "info", "about", "spec", "plan", "document", "script"]) and not has_search_criteria):
         data["intent"] = "document_qa"
         data["needs_clarification"] = False
         data["clarification_question"] = None

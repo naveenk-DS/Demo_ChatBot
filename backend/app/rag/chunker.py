@@ -15,10 +15,11 @@ DEFAULT_CHUNK_SIZE: int = 600
 DEFAULT_CHUNK_OVERLAP: int = 100
 
 # Document-agnostic section header detection:
-# Matches lines starting with a capital letter/digit, up to 45 characters, ending with a colon.
+# Matches lines starting with a capital letter/digit, up to 45 characters, ending with a colon
+# OR appearing as a section title line immediately preceding bullet points (e.g. "Master Bedroom\n• ...").
 # E.g. "Entrance:", "Living & Dining:", "Kitchen:", "Master Bedroom:", "Specifications:", "Amenities:"
 GENERIC_HEADER_REGEX = re.compile(
-    r"(?=^[A-Z0-9][A-Za-z0-9\s&,/'-]{1,45}:\s*$)",
+    r"(?=^[A-Z0-9][A-Za-z0-9\s&,/()-]{1,45}(?::|\s*$)(?=\s*\n\s*•))|(?=^[A-Z0-9][A-Za-z0-9\s&,/()-]{1,45}:\s*$)",
     re.MULTILINE,
 )
 
@@ -219,7 +220,7 @@ def chunk_documents(
 
                 # Determine section heading dynamically
                 first_line = cleaned_sec.split("\n")[0].strip()
-                if first_line.endswith(":"):
+                if first_line.endswith(":") or (len(first_line) <= 45 and not first_line.startswith("•")):
                     heading = first_line.rstrip(":")
                     last_section_heading = heading
                 else:

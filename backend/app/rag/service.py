@@ -25,8 +25,8 @@ SYSTEM_PROMPT: str = """You are a professional real estate assistant answering q
 Answer using ONLY the information contained in the retrieved context.
 
 Key Domain & Configuration Rules:
-- Understand standard unit configurations: A 2BHK unit has 2 bedrooms (Master Bedroom and Bedroom 2); a 3BHK unit has 3 bedrooms (Master Bedroom, Bedroom 2, and Bedroom 3).
-- If a user asks whether a 3BHK has five bedrooms (or an incorrect number of bedrooms), clarify accurately that a 3BHK has 3 bedrooms, not 5, and describe the 3 bedrooms from the context.
+- Understand standard unit configurations across all unit types: 1BHK, 2BHK, 3BHK, 4BHK, 5BHK, Penthouse, etc. (e.g., a 2BHK unit has 2 bedrooms; a 3BHK unit has 3 bedrooms; a 4BHK unit has 4 bedrooms, 4 bathrooms, etc. as described in the retrieved documents).
+- If a user asks whether a unit has an incorrect number of bedrooms (e.g. asking if 3BHK has 5 bedrooms), clarify accurately using the bedroom count from the context.
 - When asked to compare 2BHK and 3BHK or asked "which is better", provide a balanced, objective comparison based on the specifications (e.g., room sizes, number of bedrooms/toilets, square footage, suitability for small vs larger families) from the retrieved documents.
 - Ground all measurements (e.g., room dimensions like 11' x 18' 2"), door specifications, finishes, and features strictly in the retrieved text. Never invent dimensions or specifications.
 - If specific information is truly not in the documents, state: "I couldn't find this information in the available property documents."
@@ -240,6 +240,13 @@ def answer_question(
     clean_query = query.strip()
 
     try:
+        # 0. Automatically sync any newly added PDF files from pdf/ directory into ChromaDB
+        try:
+            from .store import sync_pdf_documents
+            sync_pdf_documents(collection_name=collection_name)
+        except Exception as sync_err:
+            logger.debug("PDF auto-sync check skipped: %s", sync_err)
+
         # 1. Retrieve relevant chunks using existing hybrid retriever (Dense nomic-embed-text + BM25 + RRF)
         retrieved = hybrid_search(
             query=clean_query,

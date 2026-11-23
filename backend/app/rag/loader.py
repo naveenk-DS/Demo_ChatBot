@@ -25,20 +25,21 @@ def extract_document_metadata(file_path: Union[str, Path], first_page_text: str 
     """
     path = Path(file_path)
     stem = path.stem
-    lower_stem = stem.lower()
+    stem_clean = stem.replace("_", " ")
+    lower_stem = stem_clean.lower()
     first_lines = [line.strip() for line in first_page_text.split("\n") if line.strip()][:3]
 
     # 1. Dynamic Configuration extraction (e.g. 1BHK, 2BHK, 3BHK, 4BHK, Studio, Penthouse, Villa, Plot)
     config_match = re.search(
         r"\b([1-9]\s*BHK|[1-9]\s*RK|Studio|Penthouse|Villa|Duplex|Plot)\b",
-        f"{stem} {' '.join(first_lines)}",
+        f"{stem_clean} {' '.join(first_lines)}",
         re.IGNORECASE,
     )
     configuration = re.sub(r"\s+", "", config_match.group(1).upper()) if config_match else "general"
 
     # 2. Dynamic Property Name extraction from delimiter or first heading
     property_name = ""
-    parts = re.split(r"[-–—|]", stem)
+    parts = re.split(r"[-–—|]", stem_clean)
     if len(parts) > 1:
         candidate = parts[-1].strip()
         if not re.search(r"\b([1-9]\s*BHK|Script|Brochure|Floor\s*Plan)\b", candidate, re.I) and len(candidate) > 2:
@@ -143,6 +144,10 @@ def load_pdf_documents(pdf_dir: Optional[Union[str, Path]] = None) -> list[dict[
                 page_count = len(doc)
                 extracted_pages = 0
 
+                # Extract document-level metadata from page 1 and filename
+                doc_first_text = doc.load_page(0).get_text("text").strip() if page_count > 0 else ""
+                doc_prop_name, doc_config = extract_property_and_config(file_path.name, doc_first_text)
+
                 for page_idx in range(page_count):
                     try:
                         page = doc.load_page(page_idx)
@@ -152,14 +157,17 @@ def load_pdf_documents(pdf_dir: Optional[Union[str, Path]] = None) -> list[dict[
                         if not text:
                             continue
 
+                        # Inherit document-level metadata or specialize if page mentions distinct config
                         prop_name, config = extract_property_and_config(file_path.name, text)
+                        final_prop = prop_name if prop_name and prop_name != "Bathroom 2" else doc_prop_name
+                        final_config = config if config and config != "general" else doc_config
 
                         documents.append({
                             "source": file_path.name,
                             "page": page_idx + 1,  # 1-indexed human-readable numbering
                             "text": text,
-                            "property_name": prop_name,
-                            "configuration": config,
+                            "property_name": final_prop,
+                            "configuration": final_config,
                         })
                         extracted_pages += 1
                     except Exception as page_err:
