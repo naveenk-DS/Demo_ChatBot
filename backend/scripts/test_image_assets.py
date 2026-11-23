@@ -68,7 +68,7 @@ def test_image_asset_pipeline():
     # 3. Test Metadata Association with PDFs / CSVs
     print("\n--- 3. Testing Property & Document Association ---")
     sample_img = assets[0]
-    assert "Casagrand Aquagrove" in sample_img["property_name"] or "Housing" in sample_img["property_name"]
+    assert "Aquagrove" in sample_img["property_name"] or "Housing" in sample_img["property_name"]
     assert len(sample_img["associated_documents"]) > 0
     print(f"✓ Image '{sample_img['filename']}' successfully associated with property: {sample_img['property_name']}")
     print(f"✓ Associated documents: {sample_img['associated_documents']}")

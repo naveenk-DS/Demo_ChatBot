@@ -59,6 +59,11 @@ def extract_document_metadata(file_path: Union[str, Path], first_page_text: str 
     if not property_name:
         property_name = re.sub(r"[_\-]+", " ", stem).strip().title()
 
+    # Clean out any developer/builder prefixes like 'Casagrand' or 'Casa grand'
+    property_name = re.sub(r"(?i)\bcasa\s*grand\b", "", property_name).strip(" -–—|,")
+    if not property_name:
+        property_name = "Model House"
+
     # 3. Dynamic Document Type detection
     doc_type = "document"
     for candidate_type in ("brochure", "script", "floor_plan", "specification", "pricing", "handbook"):

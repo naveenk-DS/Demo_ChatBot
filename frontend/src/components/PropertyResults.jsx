@@ -6,6 +6,15 @@ import PropertyCard from './PropertyCard';
  * Displays retrieved Athena SQL inventory records, or context-aware
  * local image asset gallery filtered by user requests (room/category/all).
  */
+// Helper to sanitize project title so brand/developer names like "Casagrand" or "Casa grand" are never shown under project title
+function cleanProjectTitle(name) {
+    if (!name) return '';
+    return name
+        .replace(/casa\s*grand/gi, '')
+        .replace(/^[\s\-–—|,]+|[\s\-–—|,]+$/g, '')
+        .trim();
+}
+
 export default function PropertyResults({
     properties = [],
     imageAssets = [],
@@ -198,9 +207,9 @@ export default function PropertyResults({
                                                     {asset.category}
                                                 </span>
                                             )}
-                                            {asset.property_name && (
+                                            {cleanProjectTitle(asset.property_name) && (
                                                 <span className="thumbnail-property-tag">
-                                                    {asset.property_name}
+                                                    {cleanProjectTitle(asset.property_name)}
                                                 </span>
                                             )}
                                         </div>
@@ -255,9 +264,9 @@ export default function PropertyResults({
                                 <span className="preview-asset-note">
                                     📁 Stored as project media asset • Plain image file mode
                                 </span>
-                                {selectedImage.property_name && (
+                                {cleanProjectTitle(selectedImage.property_name) && (
                                     <span className="preview-property-note">
-                                        Project: <strong>{selectedImage.property_name}</strong>
+                                        Project: <strong>{cleanProjectTitle(selectedImage.property_name)}</strong>
                                     </span>
                                 )}
                             </div>

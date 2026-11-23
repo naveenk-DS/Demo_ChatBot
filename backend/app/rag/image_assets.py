@@ -75,6 +75,14 @@ def detect_image_category(filename: str) -> str:
     return "general"
 
 
+def sanitize_property_name(name: Optional[str]) -> str:
+    """Removes any developer prefix like 'Casagrand' or 'Casa grand' from project titles."""
+    if not name:
+        return "General Property"
+    cleaned = re.sub(r"(?i)\bcasa\s*grand\b", "", name).strip(" -–—|,")
+    return cleaned if cleaned else "General Property"
+
+
 def detect_associated_metadata(source_dir: Path) -> dict[str, Any]:
     """
     Inspects neighboring PDF and CSV files in the source directory to discover
@@ -88,22 +96,34 @@ def detect_associated_metadata(source_dir: Path) -> dict[str, Any]:
         associated_docs.append(pdf_file.name)
         meta = extract_document_metadata(pdf_file)
         if meta.get("property_name"):
-            property_names.add(meta["property_name"])
+            clean_name = sanitize_property_name(meta["property_name"])
+            if clean_name:
+                property_names.add(clean_name)
 
     # 2. Discover CSV/Excel files
     for csv_file in source_dir.glob("*.csv"):
         associated_docs.append(csv_file.name)
         # Use stem as dataset identifier
-        dataset_name = csv_file.stem.replace("_", " ").title()
-        property_names.add(dataset_name)
+        dataset_name = sanitize_property_name(csv_file.stem.replace("_", " ").title())
+        if dataset_name:
+            property_names.add(dataset_name)
 
     for xls_file in list(source_dir.glob("*.xlsx")) + list(source_dir.glob("*.xls")):
         associated_docs.append(xls_file.name)
 
-    primary_property = sorted(list(property_names))[0] if property_names else "General Property"
+    real_projects = [
+        p for p in property_names
+        if not re.search(r"\b(Sample|Script|Document|Data|Housing)\b", p, re.I)
+    ]
+    if real_projects:
+        primary_property = sorted(real_projects)[0]
+    elif property_names:
+        primary_property = sorted(list(property_names))[0]
+    else:
+        primary_property = "General Property"
 
     return {
-        "property_name": primary_property,
+        "property_name": sanitize_property_name(primary_property),
         "all_properties": sorted(list(property_names)),
         "associated_documents": sorted(associated_docs),
     }
@@ -234,10 +254,11 @@ def list_image_assets(
 
 def format_asset_payload(record: dict[str, Any]) -> dict[str, Any]:
     """Helper to convert stored record to JSON payload with API URL."""
+    prop_name = sanitize_property_name(record.get("property_name", "General Property"))
     return {
         "filename": record.get("filename"),
         "category": record.get("category", "general"),
-        "property_name": record.get("property_name", "General Property"),
+        "property_name": prop_name,
         "file_type": record.get("file_type", "image/jpeg"),
         "file_size_bytes": record.get("file_size_bytes", 0),
         "url": f"/api/assets/images/{record.get('filename')}",
