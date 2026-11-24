@@ -1,0 +1,47 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "BedrockKBEmbeddingModelInvocation",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:InvokeModel"
+      ],
+      "Resource": [
+        "arn:aws:bedrock:*::foundation-model/amazon.titan-embed-text-v2:0",
+        "arn:aws:bedrock:*::foundation-model/cohere.embed-english-v3",
+        "arn:aws:bedrock:*::foundation-model/cohere.embed-multilingual-v3"
+      ]
+    },
+    {
+      "Sid": "BedrockKBS3DataSourceReadAccess",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::cg-website-chatbot-data",
+        "arn:aws:s3:::cg-website-chatbot-data/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceAccount": [
+            "${aws:PrincipalAccount}"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "BedrockKBOpenSearchServerlessAccess",
+      "Effect": "Allow",
+      "Action": [
+        "aoss:APIAccessAll"
+      ],
+      "Resource": [
+        "arn:aws:aoss:*:*:collection/*"
+      ]
+    }
+  ]
+}
+

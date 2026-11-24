@@ -27,8 +27,8 @@ from app.schemas import SearchFilters
 
 logger = logging.getLogger("estateai.bedrock_service")
 
-# Default Bedrock model IDs
-DEFAULT_CHAT_MODEL = "anthropic.claude-3-sonnet-20240229-v1:0"
+# Default Bedrock model IDs (Amazon Bedrock Nova is the primary conversational engine)
+DEFAULT_CHAT_MODEL = "amazon.nova-pro-v1:0"
 DEFAULT_EMBEDDING_MODEL = "amazon.titan-embed-text-v2:0"
 DEFAULT_EMBEDDING_DIMENSIONS = 1024
 
@@ -78,7 +78,10 @@ class BedrockService:
         embedding_dimensions: Optional[int] = None,
     ):
         self.region_name = region_name or env("AWS_REGION", "ap-south-1")
-        self.chat_model_id = chat_model_id or env("BEDROCK_CHAT_MODEL_ID", DEFAULT_CHAT_MODEL)
+        self.chat_model_id = chat_model_id or env(
+            "BEDROCK_NOVA_MODEL_ID",
+            env("BEDROCK_MODEL_ID", env("BEDROCK_CHAT_MODEL_ID", DEFAULT_CHAT_MODEL)),
+        )
         self.embedding_model_id = embedding_model_id or env("BEDROCK_EMBEDDING_MODEL_ID", DEFAULT_EMBEDDING_MODEL)
         self.embedding_dimensions = embedding_dimensions or int_env("BEDROCK_EMBEDDING_DIMENSIONS", DEFAULT_EMBEDDING_DIMENSIONS)
         

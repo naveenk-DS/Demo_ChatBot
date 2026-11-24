@@ -12,7 +12,9 @@ import re
 from collections import Counter
 from typing import Any, Optional
 
+from app.config import env, bool_env
 from app.rag.store import get_vector_store
+from app.services.bedrock_kb_service import BedrockKnowledgeBaseService, BedrockKnowledgeBaseError
 
 logger = logging.getLogger("estateai.retriever")
 
@@ -179,5 +181,25 @@ def retrieve_relevant_chunks(
     bhk: Optional[int] = None,
     category: Optional[str] = None,
 ) -> list[dict[str, Any]]:
-    """Primary retrieval entrypoint for chat orchestration."""
+    """
+    Primary retrieval entrypoint for chat orchestration.
+    1. If Amazon Bedrock Knowledge Bases is configured (BEDROCK_KNOWLEDGE_BASE_ID),
+       queries the Bedrock Agent Runtime Retrieve API over ingested architectural documents.
+    2. Enforces production failure safety: never silently falls back to local FAISS in production.
+    3. If Knowledge Base is unconfigured, uses local FAISS + BM25 hybrid search for offline dev/test.
+    """
+    kb_service = BedrockKnowledgeBaseService()
+    if kb_service.is_configured():
+        try:
+            return kb_service.retrieve(query=query, top_k=top_k)
+        except BedrockKnowledgeBaseError as kb_err:
+            app_env = env("APP_ENV", "production").lower().strip()
+            allow_fallback = bool_env("ALLOW_LOCAL_FALLBACK", False)
+            if app_env == "production" or not allow_fallback:
+                logger.error("Bedrock Knowledge Base query failed in production. Silent fallback to FAISS is disallowed: %s", kb_err)
+                raise
+            logger.warning("Bedrock Knowledge Base query failed in development (%s). Engaging local FAISS fallback.", kb_err)
+            return hybrid_search(query=query, top_k=top_k, bhk=bhk, category=category)
+
+    # Local development or test environment without Bedrock Knowledge Base configured
     return hybrid_search(query=query, top_k=top_k, bhk=bhk, category=category)

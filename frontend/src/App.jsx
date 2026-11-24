@@ -76,7 +76,7 @@ export default function App() {
         setMessages(updatedMessages);
         setBusy(true);
 
-        const providerLabel = provider === 'bedrock' ? 'Amazon Bedrock' : (provider === 'gemini' ? 'Google Gemini' : 'Amazon Bedrock');
+        const providerLabel = 'Amazon Bedrock';
         setBusyStatus(`Connecting to ${providerLabel}...`);
 
         const t1 = setTimeout(() => {

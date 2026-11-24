@@ -2,10 +2,12 @@
 
 EstateAI is an enterprise-grade AI concierge application for real estate property discovery, brochure document question answering (RAG), and customer enquiry capture.
 
-The application has been refactored and architected for deployment on **Amazon Web Services (AWS)** using:
-- **Amazon Bedrock**: LLM conversational synthesis (Anthropic Claude 3.5 Sonnet) & Titan Text Embeddings v2 (`amazon.titan-embed-text-v2:0`).
-- **Amazon S3**: Central storage for structured property datasets (CSV, Excel `.xlsx`, JSON) and unstructured PDF project brochures.
-- **Amazon EC2**: High-performance FastAPI backend with local persistent FAISS vector storage, served alongside a React concierge frontend via Nginx.
+The application is architected for deployment on **Amazon Web Services (AWS)** using:
+- **Amazon Bedrock Knowledge Bases**: Managed document ingestion, embeddings, and semantic/hybrid retrieval over architectural project brochures via `bedrock-agent-runtime`.
+- **Amazon Bedrock Nova**: State-of-the-art conversational generation and grounded answer synthesis via Bedrock Converse API (`amazon.nova-pro-v1:0` / `amazon.nova-lite-v1:0`).
+- **Amazon S3 (`cg-website-chatbot-data`)**: Central storage for structured property datasets (CSV, Excel `.xlsx`, JSON) and unstructured PDF project brochures across project subfolders.
+- **Amazon EC2**: High-performance FastAPI backend and React concierge frontend hosted on Ubuntu Linux with Nginx reverse proxy.
+- **Local FAISS Fallback**: Preserved strictly for offline local development and testing without live AWS credentials.
 
 ---
 
@@ -14,7 +16,7 @@ The application has been refactored and architected for deployment on **Amazon W
 ```
                                  +-----------------------------------+
                                  |         React Frontend UI         |
-                                 |     (EstateAI Concierge Widget)    |
+                                 |     (EstateAI Concierge Widget)   |
                                  +-----------------+-----------------+
                                                    | HTTP / REST
                                                    v
@@ -25,134 +27,157 @@ The application has been refactored and architected for deployment on **Amazon W
 |  |       Nginx        | -------> | FastAPI Backend (Uvicorn)                                     |  |
 |  |  (Reverse Proxy /  |          |                                                               |  |
 |  |   Static Host)     |          |  * /api/chat - Orchestrator & Natural Language Dispatcher     |  |
-|  +--------------------+          |  * /api/documents - S3 Document Catalog & Sync Pipeline        |  |
+|  +--------------------+          |  * /api/documents - S3 Catalog, Incremental Sync & Rebuild    |  |
 |                                  |  * /api/enquiries - Customer Lead & Enquiry Management        |  |
 |                                  |  * /api/assets/images - Property Media Serving                |  |
 |                                  +---------------+-------------------------------+---------------+  |
 |                                                  |                               |                  |
 |                                                  v                               v                  |
 |                                     +-------------------------+     +-------------------------+     |
-|                                     | Deterministic Search    |     | Hybrid Document RAG     |     |
-|                                     | (CSV / XLSX / JSON)     |     | (FAISS + BM25 + RRF)    |     |
+|                                     | Deterministic Search    |     | Document Specification  |     |
+|                                     | (CSV / XLSX / JSON)     |     | Retrieval Dispatcher    |     |
 |                                     +------------+------------+     +------------+------------+     |
 |                                                  |                               |                  |
-|                                                  v                               v                  |
-|                                     +-------------------------+     +-------------------------+     |
-|                                     | In-Memory Cache         |     | Persistent FAISS Index  |     |
-|                                     | (Verified Properties)   |     | (/data/faiss_index/)    |     |
-|                                     +-------------------------+     +-------------------------+     |
-+--------------------------------------------------+-------------------------------+------------------+
+|                                                  v                               |                  |
+|                                     +-------------------------+                  |                  |
+|                                     | In-Memory Store         |                  |                  |
+|                                     | (Verified Properties)   |                  |                  |
+|                                     +-------------------------+                  |                  |
++--------------------------------------------------+-------------------------------|------------------+
                                                    |                               |
-                                                   v                               v
-                                     +-------------------------+     +-------------------------+
-                                     |        Amazon S3        |     |     Amazon Bedrock      |
-                                     |  (Catalog & Brochures)  |     | (Claude 3.5 & Titan v2) |
-                                     +-------------------------+     +-------------------------+
+                   ┌───────────────────────────────┘                               │
+                   ▼                                                               ▼
+     +---------------------------+                               +------------------------------------+
+     |         Amazon S3         |                               |           Amazon Bedrock           |
+     | (cg-website-chatbot-data) |                               |                                    |
+     | - Structured Catalogs     |                               | * Knowledge Bases (Retrieve API)   |
+     | - Project Subfolders      |                               |   - Hybrid / Semantic Retrieval    |
+     | - Strictly Read-Only      |                               | * Nova Pro / Lite (Converse API)   |
+     +---------------------------+                               +------------------------------------+
 ```
 
 ---
 
-## 2. Key Features
+## 2. Document & Ingestion Architecture
 
-- **Accurate Property Search:** No LLM hallucination of prices or availability. Natural language queries are extracted into structured filters (BHK, price ceiling, location, facing, etc.) and queried against verified catalog files.
-- **Dynamic & Expandable S3 Ingestion:** Ingests any number of supported documents (CSV, multi-sheet Excel `.xlsx`, nested JSON, and PDF) without code modifications. Features automatic S3 `list_objects_v2` pagination, fingerprint change detection (SHA-256), and safe ignoring of unsupported formats.
-- **Full Document Lifecycle & Stale Data Purge:** When documents are modified or replaced in S3, stale structured records and vector chunks are automatically purged before re-indexing. When files are deleted from S3, searchable records are safely removed.
-- **Persistent Document Registry:** Tracks S3 key, filename, file type, SHA-256 fingerprint, last modified timestamp, indexing status (`pending`, `processing`, `indexed`, `failed`), and chunk/record counts across EC2 restarts.
-- **Hybrid RAG for Brochures:** Documents are indexed using PyMuPDF and embedded with Amazon Titan Embeddings v2 into a FAISS index, combined with BM25 keyword scoring via Reciprocal Rank Fusion (RRF).
-- **Enterprise Security:**
-  - Zero hardcoded credentials; uses AWS EC2 IAM Instance Profiles.
-  - Path traversal defense on image and document downloads.
-  - CORS security with configurable origin allowlists.
-  - Retains Athena/Glue code for enterprise data lake queries, disabled by default via config flags.
-- **Multi-Intent Dispatching:** Automatically distinguishes greetings, property search, document Q&A, photo/media requests, and enquiry capture in a unified conversation flow.
+### Data Separation Principle
+The application cleanly separates structured inventory data from unstructured project documents:
+- **Structured Datasets (`.csv`, `.xlsx`, `.xls`, `.json`):** Synchronized from the S3 bucket into memory (`StructuredDataStore`) for 100% deterministic property matching (BHK, price ceiling, location, facing, sq.ft.). The LLM is never permitted to invent property prices or availability.
+- **Unstructured Documents (`.pdf`):** Ingested and indexed in AWS by the Team Lead into an Amazon Bedrock Knowledge Base. The backend queries the Knowledge Base via `bedrock-agent-runtime.retrieve()` to answer architectural and specification questions.
+
+### Configurable Retrieval Modes
+- **Search Type (`BEDROCK_KB_SEARCH_TYPE`):** Supports `HYBRID` (vector + text search) or `SEMANTIC` (pure vector search), aligning with the vector store backing the Knowledge Base (Amazon OpenSearch Serverless, Pinecone, or Amazon Aurora).
+- **Production Guard (No Silent Fallback):** When `BEDROCK_KNOWLEDGE_BASE_ID` is configured, retrieval failures in production (`APP_ENV=production`) raise explicit exceptions and never silently fall back to stale local vectors.
+- **Offline / Local Dev Fallback:** When `BEDROCK_KNOWLEDGE_BASE_ID` is unset, the application automatically engages local FAISS + BM25 hybrid search over cached documents.
 
 ---
 
-## 3. Directory Layout
+## 3. Security & IAM Roles Separation
+
+To follow AWS security best practices, the EC2 application role is completely separated from the Bedrock Knowledge Base service role:
+
+1. **EC2 Application Role (`deploy/ec2_app_role_policy.json`):**
+   - Attached to the EC2 instance profile.
+   - `bedrock:InvokeModel` and `bedrock:InvokeModelWithResponseStream` on Amazon Nova and Claude models.
+   - `bedrock:Retrieve` and `bedrock:RetrieveAndGenerate` on Bedrock Knowledge Bases.
+   - **Strictly Read-Only on S3:** `s3:GetObject`, `s3:ListBucket`, `s3:GetBucketLocation` on `cg-website-chatbot-data`.
+   - `s3:PutObject` and `s3:DeleteObject` are **completely omitted**.
+2. **Bedrock Knowledge Base Service Role (`deploy/bedrock_kb_service_role_policy.json`):**
+   - Assumed by `bedrock.amazonaws.com` for S3 ingestion and embedding generation.
+   - Embeddings invocation (`bedrock:InvokeModel` on Titan Embeddings v2).
+   - Read access to S3 bucket data source.
+   - OpenSearch Serverless collection access (`aoss:APIAccessAll`).
+
+---
+
+## 4. Directory Layout
 
 ```
 real_estate_ai_demo/
 ├── backend/
 │   ├── app/
 │   │   ├── data_pipeline/
-│   │   │   ├── __init__.py
-│   │   │   └── structured.py          # CSV, XLSX, JSON parsing & deterministic search
+│   │   │   └── structured.py          # CSV, XLSX, JSON deterministic parser
 │   │   ├── rag/
-│   │   │   ├── chunker.py             # Semantic document chunking
-│   │   │   ├── loader.py              # PyMuPDF PDF extraction & fingerprinting
-│   │   │   ├── retriever.py           # Hybrid BM25 + FAISS vector retriever (RRF)
-│   │   │   ├── service.py             # Grounded Bedrock Q&A generation
-│   │   │   └── store.py               # FAISS vector store with NumPy fallback
+│   │   │   ├── chunker.py             # Semantic document chunker (dev fallback)
+│   │   │   ├── loader.py              # PyMuPDF extractor (dev fallback)
+│   │   │   ├── retriever.py           # Unified dispatcher (Bedrock KB vs FAISS fallback)
+│   │   │   └── store.py               # Local FAISS vector store (dev fallback)
 │   │   ├── services/
-│   │   │   ├── bedrock_service.py     # Amazon Bedrock Converse & Titan v2 embeddings
-│   │   │   └── s3_service.py          # Amazon S3 download, sync & local caching
-│   │   ├── athena.py                  # Athena query runner (disabled by default)
-│   │   ├── config.py                  # Unified configuration & environment loaders
-│   │   ├── enquiries.py               # Customer enquiry SQLite database store
+│   │   │   ├── bedrock_kb_service.py  # Amazon Bedrock Knowledge Bases Retrieve API
+│   │   │   ├── bedrock_service.py     # Amazon Bedrock Nova Converse API synthesis
+│   │   │   ├── document_registry.py   # Persistent document tracking
+│   │   │   ├── lock_service.py        # Process indexing lock
+│   │   │   └── s3_service.py          # S3 dynamic discovery across project folders
+│   │   ├── config.py                  # Unified environment loader
+│   │   ├── enquiries.py               # Customer lead SQLite database store
 │   │   ├── main.py                    # FastAPI application & chat orchestrator
 │   │   └── schemas.py                 # Pydantic models & API contract definitions
 │   ├── data/
-│   │   ├── documents/                 # Local cache of structured property catalogs
-│   │   └── faiss_index/               # Local persistent FAISS vector index files
-│   ├── static/                        # Property images and assets
-│   ├── tests/                         # Full automated test suite (24 unit & integration tests)
+│   │   ├── documents/                 # Local cache of property catalogs
+│   │   └── faiss_index/               # Local persistent FAISS files (dev fallback)
+│   ├── tests/                         # Full automated test suite (63 unit & integration tests)
 │   ├── Dockerfile                     # Multi-stage production Dockerfile
 │   └── requirements.txt               # Clean Python dependencies
 ├── deploy/
-│   ├── ec2_bedrock_s3_policy.json     # AWS IAM Policy for EC2 instance profile
+│   ├── ec2_app_role_policy.json       # EC2 IAM application role policy (Nova + KB + S3 Read-Only)
+│   ├── bedrock_kb_service_role_policy.json # Bedrock Knowledge Base service role policy
 │   ├── estateai.service               # Systemd service unit for Ubuntu EC2
 │   ├── nginx.conf                     # Nginx reverse proxy configuration
 │   └── setup_ec2.sh                   # Automated EC2 setup script
 ├── frontend/                          # React + Vite Concierge Chatbot UI
-├── docker-compose.yml                 # Local & staging Docker Compose configuration
-├── EC2_DEPLOYMENT_GUIDE.md            # Comprehensive AWS EC2 deployment walkthrough
-├── BACKEND_AUDIT.md                   # Pre-refactor AST audit & technical debt log
-├── EXISTING_API_CONTRACTS.md          # Complete API contract specification
-├── REMOVAL_AND_REFACTOR_PLAN.md       # Architecture transition blueprint
-└── IMPLEMENTATION_PROGRESS.md         # 12-phase progress & test report
+│   ├── src/
+│   │   ├── components/                # ConciergeWidget, PropertyDetailCard, Carousel, Modal
+│   │   ├── App.jsx                    # Root state & API integration
+│   │   └── style.css                  # Custom styling (Teal / Forest-green theme)
+│   ├── package.json
+│   └── vite.config.js
+├── .env.example                       # Root environment variable template
+├── .gitignore                         # Comprehensive Git exclusion rules
+└── README.md
 ```
 
 ---
 
-## 4. Local Development Setup
+## 5. Local Development Setup
 
 ### Backend Setup
 
-1. **Navigate to backend and create virtual environment:**
+1. **Create virtual environment and install dependencies:**
    ```bash
    cd backend
    python -m venv .venv
-   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-   ```
-
-2. **Install dependencies:**
-   ```bash
+   source .venv/bin/activate  # Windows: .venv\Scripts\activate
    pip install -r requirements.txt
    ```
 
-3. **Configure Environment:**
+2. **Configure Environment:**
    ```bash
    cp .env.example .env
    ```
    Edit `.env` as appropriate:
    ```ini
-   AWS_REGION=us-east-1
-   BEDROCK_MODEL_ID=anthropic.claude-3-5-sonnet-20241022-v2:0
-   BEDROCK_EMBEDDING_MODEL_ID=amazon.titan-embed-text-v2:0
-   S3_BUCKET_NAME=
-   ENABLE_ATHENA=false
-   ENABLE_GLUE=false
+   APP_ENV=development
+   AWS_REGION=ap-south-1
+   S3_BUCKET_NAME=cg-website-chatbot-data
+   S3_DOCUMENT_PREFIX=
+   BEDROCK_NOVA_MODEL_ID=amazon.nova-pro-v1:0
+   BEDROCK_KNOWLEDGE_BASE_ID=YOUR_BEDROCK_KNOWLEDGE_BASE_ID
+   BEDROCK_KB_SEARCH_TYPE=HYBRID
+   ALLOW_LOCAL_FALLBACK=true
+   AWS_EC2_METADATA_DISABLED=true
+   ADMIN_API_KEY=dev-secret-key-123
    ```
-   *(Note: If AWS credentials are not configured locally, the backend gracefully falls back to deterministic rule-based query handling and NumPy vector similarity for testing).*
+   *(Note: When AWS credentials or Knowledge Base ID are not configured locally, the backend automatically uses deterministic rule-based query handling and local cached documents).*
 
-4. **Run the backend:**
+3. **Run the backend:**
    ```bash
    uvicorn app.main:app --reload --port 8000
    ```
 
 ### Frontend Setup
 
-1. **Navigate to frontend:**
+1. **Install and run frontend:**
    ```bash
    cd frontend
    npm install
@@ -162,38 +187,27 @@ real_estate_ai_demo/
 
 ---
 
-## 5. Running the Test Suite
+## 6. Running the Test Suite
 
-Run the full automated test suite (36 tests covering dynamic S3 discovery, pagination, incremental sync, stale data purges, multi-sheet Excel, PDF extraction, hybrid RAG, Bedrock fallback, and chat endpoints):
+Run the full automated test suite (63 tests covering dynamic S3 discovery, project folder keys, Knowledge Base Retrieve API, HYBRID/SEMANTIC search types, production fail-closed protection, offline FAISS fallback, and chat endpoints):
 
 ```bash
-python -m unittest backend/tests/test_structured_pipeline.py backend/tests/test_pdf_rag.py backend/tests/test_integration_and_fallbacks.py backend/tests/test_chat_endpoints.py backend/tests/test_dynamic_s3_and_lifecycle.py -v
+cd backend
+python -m unittest tests/test_structured_pipeline.py tests/test_pdf_rag.py tests/test_integration_and_fallbacks.py tests/test_chat_endpoints.py tests/test_dynamic_s3_and_lifecycle.py tests/test_bedrock_kb_retrieval.py -v
 ```
-
----
-
-## 6. AWS EC2 Deployment
-
-For production deployment instructions, see the comprehensive [EC2 Deployment Guide](EC2_DEPLOYMENT_GUIDE.md).
-
-Quick summary:
-1. Launch an EC2 instance (Ubuntu 22.04 LTS) and attach the IAM Role defined in `deploy/ec2_bedrock_s3_policy.json`.
-2. Run `deploy/setup_ec2.sh` to install system packages, Python 3.11, Nginx, and Node.js.
-3. Build the frontend with `npm run build`.
-4. Enable the `estateai.service` systemd service and restart Nginx.
 
 ---
 
 ## 7. API Endpoints Reference
 
-| Method | Path | Description |
-| :--- | :--- | :--- |
-| `GET` | `/health` | Health check & connection status (Bedrock, S3, catalog count) |
-| `GET` | `/api/providers` | Active AI provider info (`{"active": "bedrock", ...}`) |
-| `POST` | `/api/chat` | Main conversational concierge endpoint |
-| `GET` | `/api/documents` | List uploaded PDF brochures and catalog files |
-| `POST` | `/api/documents/upload` | Upload new PDF brochures or datasets to S3 |
-| `GET` | `/api/assets/images` | List available property image assets |
-| `GET` | `/api/assets/images/{filename}` | Serve specific property images |
-| `POST` | `/api/enquiries` | Save customer lead or contact enquiry |
-
+| Method | Path | Auth | Description |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/health` | None | Health check, Bedrock Nova, Knowledge Base, and S3 status |
+| `GET` | `/api/providers` | None | Active AI provider info (`{"active": "bedrock", "knowledge_base": {...}}`) |
+| `POST` | `/api/chat` | None | Main conversational concierge endpoint (Nova + KB RAG) |
+| `GET` | `/api/documents` | None | List indexed catalog files and brochures |
+| `POST` | `/api/documents/upload` | Bearer | Administrative upload of documents to S3 with atomic collision check |
+| `POST` | `/api/documents/reindex` | Bearer | Trigger document sync or staged full index rebuild (`?force_rebuild=true`) |
+| `GET` | `/api/assets/images` | None | List available property image assets with category filter |
+| `GET` | `/api/assets/images/{filename}` | None | Serve specific property images |
+| `POST` | `/api/enquiries` | None | Save customer lead or contact enquiry |

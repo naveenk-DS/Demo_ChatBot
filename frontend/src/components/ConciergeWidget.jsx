@@ -15,7 +15,7 @@ export default function ConciergeWidget({
     onSend,
     isBusy = false,
     busyStatus = 'Analyzing query...',
-    provider = 'gemini',
+    provider = 'bedrock',
     setProvider,
     onSelectProperty,
     onSendBrochure,

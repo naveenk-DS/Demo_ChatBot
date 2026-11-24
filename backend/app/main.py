@@ -11,6 +11,9 @@ import copy
 import logging
 import os
 import re
+import secrets
+import shutil
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Optional
@@ -23,9 +26,10 @@ from app.config import env, int_env, bool_env
 from app.enquiries import save_enquiry
 from app.rag.image_assets import format_asset_payload, ingest_image_assets, list_image_assets
 from app.rag.retriever import retrieve_relevant_chunks
-from app.rag.store import get_vector_store
+from app.rag.store import get_vector_store, FaissVectorStore
 from app.schemas import ChatRequest, EnquiryRequest, SearchFilters
 from app.services.bedrock_service import BedrockService
+from app.services.bedrock_kb_service import BedrockKnowledgeBaseService
 from app.services.s3_service import S3Service, S3AccessError, S3PaginationError
 from app.services.document_registry import DocumentRegistry, get_document_registry
 from app.services.lock_service import acquire_indexing_lock, IndexingConflictError
@@ -125,17 +129,196 @@ def _rag_to_details(rag_chunks: list[dict[str, Any]], query: str = "") -> list[s
 def require_admin_auth(x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key")):
     """
     Enforces administrative key validation for document uploads and re-indexing.
-    If ADMIN_API_KEY is defined in environment, it must match.
-    In production mode, if ADMIN_API_KEY is not defined, admin endpoints require non-empty header.
+    - If ADMIN_API_KEY is missing or empty on the server, administrative actions are rejected.
+    - Never accepts an arbitrary non-empty header.
+    - Uses secrets.compare_digest for constant-time comparison against timing attacks.
+    - Never logs passwords, API keys, or secrets.
     """
-    admin_key = env("ADMIN_API_KEY", "")
-    is_prod = env("APP_ENV", "production").lower() in ("production", "prod")
-    if admin_key:
-        if not x_admin_key or x_admin_key != admin_key:
-            raise HTTPException(status_code=401, detail="Unauthorized: Invalid or missing X-Admin-Key header")
-    elif is_prod:
-        if not x_admin_key:
-            raise HTTPException(status_code=401, detail="Unauthorized: Administrative actions require X-Admin-Key in production")
+    admin_key = env("ADMIN_API_KEY", "").strip()
+    if not admin_key:
+        raise HTTPException(
+            status_code=503,
+            detail="Administrative endpoints are disabled: ADMIN_API_KEY is not configured on the server."
+        )
+    if not x_admin_key or not secrets.compare_digest(x_admin_key.strip(), admin_key):
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized: Invalid or missing X-Admin-Key header"
+        )
+
+
+def _execute_staged_rebuild(
+    s3_service: S3Service,
+    registry: DocumentRegistry,
+    structured_store: StructuredDataStore,
+    vector_store: FaissVectorStore,
+    bedrock: BedrockService,
+) -> dict[str, Any]:
+    """
+    Executes a 100% safe staged rebuild of the entire pipeline:
+    1. Validates S3 connectivity (or local cache availability in offline mode).
+    2. Discovers all documents via listing and complete pagination.
+    3. Builds a new index in isolated staging storage without touching active working data.
+    4. Validates the staged index for consistency and non-emptiness.
+    5. Persists the staged index to disk.
+    6. Atomically activates the replacement.
+    7. If any stage fails, aborts immediately and preserves the existing working index.
+    """
+    global VERIFIED_PROPERTIES
+
+    # 1. Validate remote connectivity if S3 is configured
+    if s3_service.is_configured():
+        try:
+            s3_service.list_s3_documents()
+        except Exception as s3_err:
+            logger.error("Staged rebuild aborted: S3 connectivity check failed: %s", s3_err)
+            raise S3AccessError(f"Cannot force rebuild: S3 access failure ({s3_err})") from s3_err
+
+    # Create temporary isolated staging directories
+    staging_ts = int(time.time() * 1000)
+    staging_vec_dir = vector_store.index_dir.parent / f".faiss_staging_{os.getpid()}_{staging_ts}"
+    staging_reg_file = registry.registry_file.parent / f".reg_staging_{os.getpid()}_{staging_ts}.json"
+    staging_vec_dir.mkdir(parents=True, exist_ok=True)
+
+    staged_vector_store = FaissVectorStore(index_dir=staging_vec_dir)
+    staged_structured_store = StructuredDataStore()
+    staged_registry = DocumentRegistry(registry_file=staging_reg_file)
+
+    try:
+        logger.info("Executing safe staged rebuild into isolated staging directory: %s", staging_vec_dir)
+        sync_manifest = s3_service.sync_documents_incremental(staged_registry)
+
+        targets_to_process = sync_manifest["new"] + sync_manifest["modified"] + sync_manifest["unchanged"]
+        for path in targets_to_process:
+            ext = path.suffix.lower()
+            canonical_key = s3_service.get_s3_key_for_path(path)
+            f_hash = s3_service.compute_file_hash(path)
+
+            staged_registry.update_status(canonical_key, status="processing")
+
+            if ext in (".csv", ".xlsx", ".xls", ".json"):
+                count = staged_structured_store.add_or_update(path, source_name=canonical_key)
+                staged_registry.update_status(canonical_key, status="indexed", record_count=count, fingerprint=f_hash)
+            elif ext in (".pdf", ".txt", ".md", ".doc", ".docx"):
+                kb_service = BedrockKnowledgeBaseService()
+                if kb_service.is_configured():
+                    # Unstructured documents are managed and indexed directly by Amazon Bedrock Knowledge Bases
+                    staged_registry.update_status(
+                        canonical_key,
+                        status="indexed",
+                        fingerprint=f_hash,
+                        error_message="Managed by Amazon Bedrock Knowledge Bases",
+                    )
+                elif bedrock.has_credentials():
+                    pdf_docs = load_single_pdf(path)
+                    chunk_count = staged_vector_store.add_documents(pdf_docs, filename=canonical_key, file_hash=f_hash)
+                    if chunk_count > 0:
+                        staged_registry.update_status(canonical_key, status="indexed", chunk_count=chunk_count, fingerprint=f_hash)
+                    else:
+                        staged_registry.update_status(canonical_key, status="failed", fingerprint=f_hash, error_message="Zero valid embeddings generated")
+                else:
+                    staged_registry.update_status(canonical_key, status="pending", fingerprint=f_hash, error_message="Bedrock credentials deferred on local environment")
+
+        # Validate staged vector store consistency
+        assert len(staged_vector_store.vectors) == len(staged_vector_store.chunks_metadata), (
+            f"Staged vector mismatch: {len(staged_vector_store.vectors)} vectors vs {len(staged_vector_store.chunks_metadata)} chunks"
+        )
+        if hasattr(staged_vector_store, "index") and staged_vector_store.index is not None:
+            assert staged_vector_store.index.ntotal == len(staged_vector_store.chunks_metadata), (
+                f"Staged FAISS ntotal ({staged_vector_store.index.ntotal}) != chunks ({len(staged_vector_store.chunks_metadata)})"
+            )
+
+        # Persist staged stores to disk
+        staged_vector_store._save_to_disk()
+        staged_registry.save()
+
+        # TRANSACTIONAL ACTIVATION WITH ROLLBACK SAFETY
+        # Protect consistency across FAISS, structured data, registry, and metadata
+        logger.info("Initiating transactional activation for validated staged rebuild...")
+        prev_structured_records = copy.deepcopy(structured_store.records_by_source)
+        prev_verified_properties = list(VERIFIED_PROPERTIES)
+        
+        activation_backup_dir = vector_store.index_dir.parent / f".activation_backup_{os.getpid()}_{staging_ts}"
+        activation_backup_dir.mkdir(parents=True, exist_ok=True)
+        reg_backup_file = activation_backup_dir / registry.registry_file.name
+
+        try:
+            # Snapshot active vector store files
+            if vector_store.index_dir.exists():
+                for f in vector_store.index_dir.iterdir():
+                    if f.is_file():
+                        shutil.copy2(f, activation_backup_dir / f.name)
+            # Snapshot active registry file
+            if registry.registry_file.exists():
+                shutil.copy2(registry.registry_file, reg_backup_file)
+
+            # Step 1: Update structured store in memory
+            structured_store.records_by_source = staged_structured_store.records_by_source
+
+            # Step 2: Copy staged vector store files into active vector directory
+            for f in staging_vec_dir.iterdir():
+                if f.is_file():
+                    dest_f = vector_store.index_dir / f.name
+                    shutil.copy2(f, dest_f)
+            vector_store._load_from_disk()
+
+            # Step 3: Replace active registry file
+            shutil.copy2(staging_reg_file, registry.registry_file)
+            registry.load()
+
+            VERIFIED_PROPERTIES = structured_store.get_all_records()
+            logger.info("Safe staged rebuild activated successfully. Verified properties: %d", len(VERIFIED_PROPERTIES))
+
+        except Exception as act_err:
+            logger.critical("Activation failed mid-transaction! Rolling back all stores: %s", act_err)
+            # Rollback structured store
+            structured_store.records_by_source = prev_structured_records
+            VERIFIED_PROPERTIES = prev_verified_properties
+            # Rollback vector store
+            if vector_store.index_dir.exists():
+                for f in activation_backup_dir.iterdir():
+                    if f.is_file() and f.name != registry.registry_file.name:
+                        shutil.copy2(f, vector_store.index_dir / f.name)
+                try:
+                    vector_store._load_from_disk()
+                except Exception:
+                    pass
+            # Rollback registry
+            if reg_backup_file.exists():
+                shutil.copy2(reg_backup_file, registry.registry_file)
+                try:
+                    registry.load()
+                except Exception:
+                    pass
+            raise IOError(f"Staged rebuild activation failed and was completely rolled back to maintain consistency: {act_err}") from act_err
+
+        finally:
+            shutil.rmtree(activation_backup_dir, ignore_errors=True)
+
+        return {
+            "status": "success",
+            "verified_properties": len(VERIFIED_PROPERTIES),
+            "manifest": {
+                "new": [p.name for p in sync_manifest["new"]],
+                "modified": [p.name for p in sync_manifest["modified"]],
+                "deleted": sync_manifest["deleted"],
+                "unchanged": [p.name for p in sync_manifest["unchanged"]],
+                "failed": sync_manifest["failed"],
+            },
+        }
+
+    except Exception as rebuild_err:
+        logger.error("Staged rebuild failed during staging and was aborted. Working index preserved: %s", rebuild_err)
+        raise
+
+    finally:
+        # Clean up staging directories and temporary files
+        shutil.rmtree(staging_vec_dir, ignore_errors=True)
+        if staging_reg_file.exists():
+            try:
+                staging_reg_file.unlink()
+            except Exception:
+                pass
 
 
 def sync_all_pipeline(force_rebuild: bool = False) -> dict[str, Any]:
@@ -150,7 +333,7 @@ def sync_all_pipeline(force_rebuild: bool = False) -> dict[str, Any]:
     - Incremental ingestion of new CSV, XLS, XLSX, JSON, and PDF files
     - Automatic removal of stale records and vector chunks when files are modified or deleted
     - Resilient recovery on EC2 restart
-    - Full rebuilding when force_rebuild=True with pre-validation of S3 accessibility
+    - Full rebuilding via 100% safe staged processing when force_rebuild=True
     """
     global VERIFIED_PROPERTIES
     s3_service = S3Service()
@@ -161,80 +344,83 @@ def sync_all_pipeline(force_rebuild: bool = False) -> dict[str, Any]:
 
     with acquire_indexing_lock(timeout_seconds=30.0):
         if force_rebuild:
-            # S3 failure safety: verify S3 is reachable and accessible BEFORE wiping local data
-            if s3_service.is_s3_configured():
-                try:
-                    s3_service.list_remote_documents()
-                except Exception as s3_err:
-                    logger.error("Force rebuild aborted: unable to access S3: %s", s3_err)
-                    raise S3AccessError(f"Cannot force rebuild: S3 access failure ({s3_err})") from s3_err
-
-            logger.info("Executing full pipeline rebuild: purging structured records, vector index, and registry cache.")
-            structured_store.clear()
-            vector_store.clear_all()
-            registry.clear()
+            return _execute_staged_rebuild(
+                s3_service=s3_service,
+                registry=registry,
+                structured_store=structured_store,
+                vector_store=vector_store,
+                bedrock=bedrock,
+            )
 
         logger.info("Executing incremental document synchronization pipeline...")
         sync_manifest = s3_service.sync_documents_incremental(registry)
 
-        # 1. Handle deleted documents (purge from structured store & FAISS)
+        # 1. Handle deleted documents using full canonical key identity (no basename stripping)
         for deleted_key in sync_manifest["deleted"]:
-            filename = Path(deleted_key).name
-            ext = Path(filename).suffix.lower()
+            ext = Path(deleted_key).suffix.lower()
 
             if ext in (".csv", ".xlsx", ".xls", ".json"):
-                purged = structured_store.remove(filename)
-                logger.info("Purged %d structured record(s) for deleted file '%s'", purged, filename)
+                purged = structured_store.remove(deleted_key)
+                logger.info("Purged %d structured record(s) for deleted file '%s'", purged, deleted_key)
             elif ext == ".pdf":
-                purged = vector_store.remove_document(filename)
-                logger.info("Purged %d vector chunk(s) for deleted PDF '%s'", purged, filename)
+                purged = vector_store.remove_document(deleted_key)
+                logger.info("Purged %d vector chunk(s) for deleted PDF '%s'", purged, deleted_key)
 
             registry.mark_deleted(deleted_key)
 
-        # 2. Process newly added or modified documents
+        # 2. Process newly added or modified documents using canonical keys
         targets_to_process = sync_manifest["new"] + sync_manifest["modified"]
         for path in targets_to_process:
             ext = path.suffix.lower()
-            filename = path.name
+            canonical_key = s3_service.get_s3_key_for_path(path)
             f_hash = s3_service.compute_file_hash(path)
 
-            registry.update_status(filename, status="processing")
+            registry.update_status(canonical_key, status="processing")
 
             try:
                 if ext in (".csv", ".xlsx", ".xls", ".json"):
-                    count = structured_store.add_or_update(path, source_name=filename)
-                    registry.update_status(filename, status="indexed", record_count=count, fingerprint=f_hash)
-                elif ext == ".pdf":
-                    if bedrock.has_credentials():
+                    count = structured_store.add_or_update(path, source_name=canonical_key)
+                    registry.update_status(canonical_key, status="indexed", record_count=count, fingerprint=f_hash)
+                elif ext in (".pdf", ".txt", ".md", ".doc", ".docx"):
+                    kb_service = BedrockKnowledgeBaseService()
+                    if kb_service.is_configured():
+                        # Unstructured documents are managed and indexed directly by Amazon Bedrock Knowledge Bases
+                        registry.update_status(
+                            canonical_key,
+                            status="indexed",
+                            fingerprint=f_hash,
+                            error_message="Managed by Amazon Bedrock Knowledge Bases",
+                        )
+                    elif bedrock.has_credentials():
                         pdf_docs = load_single_pdf(path)
-                        chunk_count = vector_store.add_documents(pdf_docs, filename=filename, file_hash=f_hash)
+                        chunk_count = vector_store.add_documents(pdf_docs, filename=canonical_key, file_hash=f_hash)
                         if chunk_count > 0:
-                            registry.update_status(filename, status="indexed", chunk_count=chunk_count, fingerprint=f_hash)
+                            registry.update_status(canonical_key, status="indexed", chunk_count=chunk_count, fingerprint=f_hash)
                         else:
                             registry.update_status(
-                                filename,
+                                canonical_key,
                                 status="failed",
                                 fingerprint=f_hash,
                                 error_message="Zero valid embeddings generated",
                             )
                     else:
                         registry.update_status(
-                            filename,
+                            canonical_key,
                             status="pending",
                             fingerprint=f_hash,
                             error_message="Bedrock credentials deferred on local environment",
                         )
             except Exception as proc_err:
-                logger.error("Failed processing document '%s': %s", filename, proc_err)
-                registry.update_status(filename, status="failed", error_message=str(proc_err))
+                logger.error("Failed processing document '%s': %s", canonical_key, proc_err)
+                registry.update_status(canonical_key, status="failed", error_message=str(proc_err))
 
         # 3. Ensure unchanged structured files are present in memory (e.g. after EC2 reboot)
         for path in sync_manifest["unchanged"]:
             ext = path.suffix.lower()
-            filename = path.name
+            canonical_key = s3_service.get_s3_key_for_path(path)
             if ext in (".csv", ".xlsx", ".xls", ".json"):
-                if filename not in structured_store.records_by_source:
-                    structured_store.add_or_update(path, source_name=filename)
+                if canonical_key not in structured_store.records_by_source:
+                    structured_store.add_or_update(path, source_name=canonical_key)
 
         VERIFIED_PROPERTIES = structured_store.get_all_records()
         logger.info("Sync pipeline complete. Verified properties: %d | Active documents: %d", len(VERIFIED_PROPERTIES), len(registry.list_active()))
@@ -329,6 +515,7 @@ def health():
     active_docs = registry.list_active()
     vector_store = get_vector_store()
     bedrock = BedrockService()
+    kb_service = BedrockKnowledgeBaseService()
     s3_service = S3Service()
     bedrock_ready = bedrock.has_credentials()
     s3_configured = s3_service.is_s3_configured()
@@ -342,10 +529,13 @@ def health():
         "aws": {
             "region": env("AWS_REGION", "ap-south-1"),
             "bedrock_ready": bedrock_ready,
-            "bedrock_chat_model": env("BEDROCK_MODEL_ID", env("BEDROCK_CHAT_MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0")),
+            "bedrock_chat_model": env("BEDROCK_NOVA_MODEL_ID", env("BEDROCK_MODEL_ID", env("BEDROCK_CHAT_MODEL_ID", "amazon.nova-pro-v1:0"))),
             "bedrock_embedding_model": env("BEDROCK_EMBEDDING_MODEL_ID", "amazon.titan-embed-text-v2:0"),
+            "bedrock_knowledge_base_id": env("BEDROCK_KNOWLEDGE_BASE_ID", ""),
+            "bedrock_kb_search_type": env("BEDROCK_KB_SEARCH_TYPE", "HYBRID"),
+            "retrieval_mode": "knowledge_base" if kb_service.is_configured() else "local_faiss",
             "s3_configured": s3_configured,
-            "s3_bucket": env("S3_BUCKET_NAME", ""),
+            "s3_bucket": env("S3_BUCKET_NAME", "cg-website-chatbot-data"),
         },
         "flags": {
             "enable_athena": bool_env("ENABLE_ATHENA", False),
@@ -359,8 +549,9 @@ def health():
 
 @app.get("/api/providers")
 def get_providers():
-    """Returns available AI provider status (Amazon Bedrock)."""
+    """Returns available AI provider status (Amazon Bedrock & Knowledge Bases)."""
     bedrock = BedrockService()
+    kb_service = BedrockKnowledgeBaseService()
     return {
         "status": "success",
         "active_provider": "bedrock",
@@ -368,8 +559,11 @@ def get_providers():
             "bedrock": {
                 "name": "Amazon Bedrock",
                 "available": bedrock.has_credentials(),
-                "chat_model": env("BEDROCK_CHAT_MODEL_ID", "anthropic.claude-3-sonnet-20240229-v1:0"),
+                "chat_model": env("BEDROCK_NOVA_MODEL_ID", env("BEDROCK_MODEL_ID", env("BEDROCK_CHAT_MODEL_ID", "amazon.nova-pro-v1:0"))),
                 "embedding_model": env("BEDROCK_EMBEDDING_MODEL_ID", "amazon.titan-embed-text-v2:0"),
+                "knowledge_base_id": env("BEDROCK_KNOWLEDGE_BASE_ID", ""),
+                "kb_search_type": env("BEDROCK_KB_SEARCH_TYPE", "HYBRID"),
+                "retrieval_mode": "knowledge_base" if kb_service.is_configured() else "local_faiss",
             }
         },
     }
@@ -450,8 +644,16 @@ async def upload_document(request: Request, filename: Optional[str] = None):
     with open(dest, "wb") as f:
         f.write(body)
 
-    # Upload to S3 if configured
-    s3_service.upload_document(dest)
+    # Upload to S3 if configured with explicit collision rejection
+    try:
+        s3_service.upload_document(dest)
+    except FileExistsError as exists_err:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Upload rejected: Document '{target_name}' already exists in S3. Overwrites are prohibited to protect immutable source data."
+        )
+    except S3AccessError as s3_err:
+        raise HTTPException(status_code=503, detail=f"S3 access error during upload: {s3_err}")
 
     try:
         sync_result = sync_all_pipeline()

@@ -456,13 +456,7 @@ def search_properties(
 
         results.append(r)
 
-    if not results and target_bhk is not None and location:
-        logger.info("No properties found for BHK=%s in location='%s'. Relaxing location filter.", target_bhk, location)
-        relaxed = [r for r in records if r.get("bhk") == target_bhk]
-        if max_price is not None:
-            relaxed = [r for r in relaxed if r.get("price") is None or r.get("price") <= max_price]
-        results = relaxed
-
+    # Strictly deterministic: never silently drop location, BHK, or price filters when no match exists.
     return results[:limit]
 
 
@@ -522,22 +516,19 @@ class StructuredDataStore:
 
     def remove(self, source_name: str) -> int:
         """
-        Removes all property records associated with source_name.
+        Removes all property records associated with canonical source_name.
+        Uses exact canonical identity to prevent cross-directory collisions.
         Returns the number of records removed.
         """
-        if source_name in self.records_by_source:
-            removed_count = len(self.records_by_source[source_name])
-            del self.records_by_source[source_name]
+        norm_target = source_name.replace("\\", "/").lower()
+        matched_keys = [k for k in self.records_by_source if k.replace("\\", "/").lower() == norm_target]
+        if matched_keys:
+            removed_count = 0
+            for k in matched_keys:
+                removed_count += len(self.records_by_source[k])
+                del self.records_by_source[k]
             logger.info("StructuredDataStore removed '%s' (%d records purged)", source_name, removed_count)
             return removed_count
-
-        # Also search case-insensitively or by stem
-        for k in list(self.records_by_source.keys()):
-            if k.lower() == source_name.lower() or Path(k).name.lower() == Path(source_name).name.lower():
-                removed_count = len(self.records_by_source[k])
-                del self.records_by_source[k]
-                logger.info("StructuredDataStore removed '%s' (%d records purged)", k, removed_count)
-                return removed_count
 
         return 0
 

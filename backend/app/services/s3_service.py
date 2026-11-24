@@ -26,7 +26,9 @@ from app.services.document_registry import DocumentRegistry, get_document_regist
 
 logger = logging.getLogger("estateai.s3_service")
 
-SUPPORTED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".json", ".pdf"}
+SUPPORTED_STRUCTURED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".json"}
+SUPPORTED_UNSTRUCTURED_EXTENSIONS = {".pdf"}
+SUPPORTED_EXTENSIONS = SUPPORTED_STRUCTURED_EXTENSIONS | SUPPORTED_UNSTRUCTURED_EXTENSIONS
 
 
 class S3AccessError(Exception):
@@ -47,8 +49,12 @@ class S3Service:
         cache_dir: Optional[Union[str, Path]] = None,
         region_name: Optional[str] = None,
     ):
-        self.bucket_name = bucket_name or env("S3_BUCKET_NAME", "")
-        self.prefix = prefix or env("S3_DOCUMENT_PREFIX", "documents/")
+        self.bucket_name = bucket_name or env("S3_BUCKET_NAME", "cg-website-chatbot-data")
+        # Configurable S3 prefix: default to empty string to allow scanning all project folders in cg-website-chatbot-data
+        if prefix is not None:
+            self.prefix = prefix
+        else:
+            self.prefix = env("S3_DOCUMENT_PREFIX", "")
         self.region_name = region_name or env("AWS_REGION", "ap-south-1")
 
         # Local document cache directory on EC2 storage
@@ -156,6 +162,8 @@ class S3Service:
 
         logger.info("Discovered %d supported document(s) in s3://%s/%s across %d page(s)", len(discovered), self.bucket_name, self.prefix, pages_processed)
         return discovered, True
+
+    list_remote_documents = list_s3_documents
 
     def get_cache_path(self, s3_key: str) -> Path:
         """
@@ -354,27 +362,30 @@ class S3Service:
         for fname, path in local_files.items():
             try:
                 f_hash = self.compute_file_hash(path)
-                reg_entry = reg.get(fname)
+                canonical_key = self.get_s3_key_for_path(path)
+                reg_entry = reg.get(canonical_key) or reg.get(fname)
                 f_type = path.suffix.lower().lstrip(".")
                 f_size = path.stat().st_size
 
                 if not reg_entry or reg_entry.get("status") == "deleted":
                     reg.register_or_update(
-                        s3_key=f"local://{fname}",
-                        filename=fname,
+                        s3_key=canonical_key,
+                        filename=canonical_key,
                         file_type=f_type,
                         fingerprint=f_hash,
                         size_bytes=f_size,
+                        cached_path=str(path),
                         status="pending",
                     )
                     result["new"].append(path)
                 elif reg_entry.get("fingerprint") != f_hash:
                     reg.register_or_update(
-                        s3_key=reg_entry.get("s3_key", f"local://{fname}"),
-                        filename=fname,
+                        s3_key=canonical_key,
+                        filename=canonical_key,
                         file_type=f_type,
                         fingerprint=f_hash,
                         size_bytes=f_size,
+                        cached_path=str(path),
                         status="pending",
                     )
                     result["modified"].append(path)
@@ -410,18 +421,67 @@ class S3Service:
 
         return sorted(candidates, key=lambda p: p.name)
 
+    def get_s3_key_for_path(self, local_path: Path) -> str:
+        """
+        Maps a local cached document Path to its canonical S3 object key.
+        Preserves subdirectory structures to prevent key/name collisions.
+        """
+        try:
+            rel = local_path.resolve().relative_to(self.cache_dir.resolve()).as_posix()
+            prefix_clean = self.prefix.strip("/")
+            if prefix_clean:
+                return f"{prefix_clean}/{rel}"
+            return rel
+        except ValueError:
+            # File is outside cache_dir (e.g. fallback local directory)
+            return f"local://{local_path.name}"
+
     def upload_document(self, local_path: Path, s3_key: Optional[str] = None) -> bool:
-        """Uploads a local document to the S3 bucket if configured."""
+        """
+        Safely uploads a local document to the S3 bucket if configured.
+        Enforces atomic collision rejection to protect original S3 source data:
+        1. Pre-checks existence via head_object (fast local rejection).
+        2. Executes atomic conditional write via put_object with IfNoneMatch='*'
+           to eliminate TOCTOU race conditions under concurrent upload attempts.
+        Never overwrites an existing remote S3 object.
+        """
         if not self.is_configured():
             logger.warning("Cannot upload to S3: bucket not configured.")
             return False
 
-        target_key = s3_key or f"{self.prefix.rstrip('/')}/{local_path.name}"
+        target_key = s3_key or self.get_s3_key_for_path(local_path)
+        client = self._get_client()
+
+        # Step 1: Explicit collision pre-check (fast local rejection)
         try:
-            client = self._get_client()
-            client.upload_file(str(local_path), self.bucket_name, target_key)
-            logger.info("Successfully uploaded %s to s3://%s/%s", local_path, self.bucket_name, target_key)
+            client.head_object(Bucket=self.bucket_name, Key=target_key)
+            logger.error("Upload rejected: S3 object s3://%s/%s already exists. Original S3 objects are immutable.", self.bucket_name, target_key)
+            raise FileExistsError(f"Collision rejected: S3 object '{target_key}' already exists in bucket '{self.bucket_name}'. Original S3 objects are immutable.")
+        except ClientError as e:
+            error_code = str(e.response.get("Error", {}).get("Code", ""))
+            # 404 / NoSuchKey / NotFound means the object does not exist yet (safe to create)
+            if error_code not in ("404", "NoSuchKey", "NotFound"):
+                logger.error("Failed checking object existence for s3://%s/%s: %s", self.bucket_name, target_key, e)
+                raise S3AccessError(f"Failed checking object existence in S3: {e}") from e
+
+        # Step 2: Atomic conditional write (eliminates TOCTOU race condition under concurrent uploads)
+        try:
+            with open(local_path, "rb") as f_data:
+                client.put_object(
+                    Bucket=self.bucket_name,
+                    Key=target_key,
+                    Body=f_data,
+                    IfNoneMatch="*",
+                )
+            logger.info("Successfully uploaded %s to s3://%s/%s with atomic concurrency protection", local_path, self.bucket_name, target_key)
             return True
+        except ClientError as e:
+            error_code = str(e.response.get("Error", {}).get("Code", ""))
+            if error_code in ("PreconditionFailed", "412", "AtLeastOneConditionFailed"):
+                logger.error("Upload rejected: S3 object s3://%s/%s already exists (concurrent write precondition failed).", self.bucket_name, target_key)
+                raise FileExistsError(f"Concurrent collision rejected: S3 object '{target_key}' already exists in bucket '{self.bucket_name}'. Original S3 objects are immutable.")
+            logger.error("Failed to upload %s to S3: %s", local_path, e)
+            raise
         except Exception as e:
             logger.error("Failed to upload %s to S3: %s", local_path, e)
-            return False
+            raise

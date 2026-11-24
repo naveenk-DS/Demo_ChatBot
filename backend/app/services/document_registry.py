@@ -120,6 +120,7 @@ class DocumentRegistry:
         record_count: int = 0,
         chunk_count: int = 0,
         error_message: Optional[str] = None,
+        cached_path: Optional[str] = None,
     ) -> dict[str, Any]:
         """Registers a new document or updates an existing document entry."""
         with self._lock:
@@ -145,6 +146,7 @@ class DocumentRegistry:
                 "record_count": record_count,
                 "chunk_count": chunk_count,
                 "error_message": error_message,
+                "cached_path": str(Path(cached_path).resolve()) if cached_path else (existing.get("cached_path") if existing else None),
                 "updated_at": now_iso,
             }
             self._registry[s3_key] = entry
@@ -152,6 +154,7 @@ class DocumentRegistry:
         self.save()
         return entry
 
+    # Alias for backwards compatibility with tests and callers
     register = register_or_update
 
     def get_by_path(self, local_path: Union[str, Path]) -> Optional[dict[str, Any]]:
@@ -176,9 +179,13 @@ class DocumentRegistry:
         with self._lock:
             entry = self._registry.get(s3_key)
             if not entry:
-                # Also try looking up by filename
+                norm_key = s3_key.replace("\\", "/").lower()
                 for k, v in self._registry.items():
-                    if v.get("filename") == s3_key:
+                    if (
+                        k.replace("\\", "/").lower() == norm_key
+                        or v.get("filename", "").replace("\\", "/").lower() == norm_key
+                        or Path(v.get("filename", "")).name.lower() == Path(s3_key).name.lower()
+                    ):
                         entry = v
                         s3_key = k
                         break
@@ -204,8 +211,6 @@ class DocumentRegistry:
         self.save()
         return entry
 
-    register = register_or_update
-
     def mark_deleted(self, s3_key: str) -> Optional[dict[str, Any]]:
         """Marks a document as deleted in the registry."""
         with self._lock:
@@ -223,8 +228,6 @@ class DocumentRegistry:
 
         self.save()
         return entry
-
-    register = register_or_update
 
     def remove(self, s3_key: str) -> bool:
         """Completely purges a document entry from the registry."""

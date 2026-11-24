@@ -77,8 +77,14 @@ class SearchFilters(BaseModel):
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
     history: list[ChatMessage] = Field(default_factory=list)
-    provider: Literal["bedrock", "openai", "gemini", "ollama"] = "bedrock"
+    provider: str = Field(default="bedrock")
     filters: Optional[SearchFilters] = None
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def normalize_provider(cls, v: Any) -> str:
+        """Enforces Amazon Bedrock as active provider, gracefully accepting legacy provider strings."""
+        return "bedrock"
 
 
 class EnquiryRequest(BaseModel):

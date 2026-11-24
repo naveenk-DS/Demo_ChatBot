@@ -130,6 +130,7 @@ class FaissVectorStore:
             logger.info("Atomically saved vector index (%d items) to %s", len(self.chunks_metadata), self.index_dir)
         except Exception as e:
             logger.error("Failed to save vector store to disk: %s", e)
+            raise IOError(f"Failed to persist vector store to disk: {e}") from e
 
     def clear_all(self) -> None:
         """Clears all in-memory and on-disk vector store records."""
@@ -166,11 +167,12 @@ class FaissVectorStore:
 
         keep_indices = []
         removed_count = 0
+        norm_target = filename.replace("\\", "/").lower()
 
         for idx, chunk in enumerate(self.chunks_metadata):
-            chunk_src = chunk.get("source", "")
-            chunk_doc_id = chunk.get("document_id", "")
-            if chunk_src == filename or chunk_src == Path(filename).name or chunk_doc_id == filename:
+            chunk_src = str(chunk.get("source", "")).replace("\\", "/").lower()
+            chunk_doc_id = str(chunk.get("document_id", "")).replace("\\", "/").lower()
+            if chunk_src == norm_target or chunk_doc_id == norm_target:
                 removed_count += 1
             else:
                 keep_indices.append(idx)
@@ -230,6 +232,7 @@ class FaissVectorStore:
         logger.info("Generating Amazon Bedrock Titan v2 embeddings for %d chunks in '%s'", len(chunks), filename)
         staged_vectors = []
         staged_metadata = []
+        failed_chunks = 0
 
         for idx, chunk in enumerate(chunks):
             text = chunk.get("text", "").strip()
@@ -247,6 +250,7 @@ class FaissVectorStore:
                 staged_metadata.append(chunk_copy)
             except Exception as e:
                 logger.error("Failed to generate embedding for chunk %d of '%s': %s", idx, filename, e)
+                failed_chunks += 1
                 continue
 
         if not staged_vectors:
@@ -262,7 +266,16 @@ class FaissVectorStore:
         # Commit staged vectors and metadata
         self.vectors.extend(staged_vectors)
         self.chunks_metadata.extend(staged_metadata)
-        self.fingerprints[filename] = file_hash
+        
+        # Only mark document fingerprint as fully indexed if 100% of chunks succeeded
+        if failed_chunks == 0:
+            self.fingerprints[filename] = file_hash
+        else:
+            logger.warning(
+                "Document '%s' had %d failed chunk(s). Staged %d valid chunk(s) but fingerprint not recorded to allow re-indexing.",
+                filename, failed_chunks, len(staged_vectors)
+            )
+
         self.version += 1
 
         # Validate vector and metadata dimension alignment

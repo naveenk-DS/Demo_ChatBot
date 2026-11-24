@@ -680,13 +680,26 @@ class TestDynamicS3AndLifecycle(unittest.TestCase):
             # Must return [] rather than dropping filter and returning 2BHK/3BHK!
             self.assertEqual(len(results), 0)
 
-    # 22. Admin Key Dependency Validation
+    # 22. Admin Key Dependency Validation (Strict Security)
     def test_admin_key_dependency(self):
-        """Verifies that require_admin_auth validates X-Admin-Key in production and when ADMIN_API_KEY is configured."""
+        """
+        Verifies that require_admin_auth:
+        1. Rejects with 503 if ADMIN_API_KEY is not configured on the server.
+        2. Rejects with 401 if header is missing.
+        3. Rejects with 401 if an arbitrary non-empty header is supplied.
+        4. Accepts only exact match via constant-time comparison.
+        """
         from app.main import require_admin_auth
         from fastapi import HTTPException
 
-        with patch.dict(os.environ, {"ADMIN_API_KEY": "secret-admin-123", "APP_ENV": "production"}):
+        # 1. Missing ADMIN_API_KEY on server -> 503 Service Unavailable
+        with patch.dict(os.environ, {"ADMIN_API_KEY": ""}):
+            with self.assertRaises(HTTPException) as cm:
+                require_admin_auth(x_admin_key="some-key")
+            self.assertEqual(cm.exception.status_code, 503)
+
+        # 2. Configured ADMIN_API_KEY
+        with patch.dict(os.environ, {"ADMIN_API_KEY": "secret-admin-123"}):
             # Missing key raises 401
             with self.assertRaises(HTTPException) as cm:
                 require_admin_auth(x_admin_key=None)
@@ -697,8 +710,228 @@ class TestDynamicS3AndLifecycle(unittest.TestCase):
                 require_admin_auth(x_admin_key="wrong-key")
             self.assertEqual(cm.exception.status_code, 401)
 
+            # Arbitrary non-empty string raises 401
+            with self.assertRaises(HTTPException) as cm:
+                require_admin_auth(x_admin_key="arbitrary-token")
+            self.assertEqual(cm.exception.status_code, 401)
+
             # Correct key passes without raising
             require_admin_auth(x_admin_key="secret-admin-123")
+
+    # 23. S3 Upload Collision Rejection (Source Data Protection)
+    def test_s3_upload_collision_rejection(self):
+        """Verifies that upload_document rejects overwriting an existing remote S3 object."""
+        s3 = S3Service(bucket_name="test-bucket", prefix="documents/", cache_dir=self.cache_dir)
+        mock_client = MagicMock()
+        # head_object succeeds, indicating object already exists in S3
+        mock_client.head_object.return_value = {"ContentLength": 500}
+        s3._s3_client = mock_client
+
+        test_file = self.cache_dir / "existing_doc.pdf"
+        test_file.write_bytes(b"sample pdf data")
+
+        with self.assertRaises(FileExistsError):
+            s3.upload_document(test_file)
+
+        # Neither put_object nor upload_file must ever be called
+        mock_client.put_object.assert_not_called()
+        mock_client.upload_file.assert_not_called()
+
+    # 24. Full S3 Key Identity (Cross-Directory Collision Prevention)
+    def test_full_s3_key_identity_across_prefixes(self):
+        """
+        Verifies that documents sharing the same basename under different S3 prefixes
+        remain completely distinct and do not collide in StructuredDataStore or FaissVectorStore.
+        """
+        # 1. Structured Data Store
+        store = StructuredDataStore()
+        csv1 = b"property_name,bhk,price\nChennai Project,2,7500000"
+        csv2 = b"property_name,bhk,price\nMadurai Project,3,6000000"
+
+        store.add_or_update(csv1, source_name="documents/chennai/projects.csv")
+        store.add_or_update(csv2, source_name="documents/madurai/projects.csv")
+
+        self.assertEqual(len(store.get_all_records()), 2)
+
+        # Purging chennai must NOT purge madurai
+        removed = store.remove("documents/chennai/projects.csv")
+        self.assertEqual(removed, 1)
+        self.assertEqual(len(store.get_all_records()), 1)
+        self.assertEqual(store.get_all_records()[0]["property_name"], "Madurai Project")
+
+        # 2. Vector Store
+        vstore = FaissVectorStore(index_dir=self.vector_dir)
+        vstore.chunks_metadata = [
+            {"chunk_id": "c1", "text": "Chennai spec", "source": "documents/chennai/property.pdf"},
+            {"chunk_id": "c2", "text": "Madurai spec", "source": "documents/madurai/property.pdf"},
+        ]
+        vstore.vectors = [[0.1] * vstore.dimension, [0.2] * vstore.dimension]
+        vstore.fingerprints = {
+            "documents/chennai/property.pdf": "hash_chennai",
+            "documents/madurai/property.pdf": "hash_madurai",
+        }
+
+        # Removing chennai must NOT remove madurai
+        vstore.remove_document("documents/chennai/property.pdf")
+        self.assertEqual(len(vstore.chunks_metadata), 1)
+        self.assertEqual(vstore.chunks_metadata[0]["source"], "documents/madurai/property.pdf")
+        self.assertIn("documents/madurai/property.pdf", vstore.fingerprints)
+        self.assertNotIn("documents/chennai/property.pdf", vstore.fingerprints)
+
+    # 25. Staged Rebuild Preserves Working Index On Failure
+    def test_staged_rebuild_preserves_working_index_on_failure(self):
+        """
+        Verifies that when force_rebuild fails during staging (e.g. S3 listing error or parsing error),
+        the active working index is 100% preserved and not wiped.
+        """
+        from app.main import sync_all_pipeline, get_structured_store, get_document_registry, get_vector_store
+
+        structured = get_structured_store()
+        registry = get_document_registry()
+
+        # Isolate and seed working state
+        structured.clear()
+        csv_data = b"property_name,bhk,price\nWorking Active Listing,2,5000000"
+        structured.add_or_update(csv_data, source_name="active_inventory.csv")
+        registry.register_or_update(
+            s3_key="active_inventory.csv",
+            filename="active_inventory.csv",
+            file_type="csv",
+            fingerprint="active_hash",
+            status="indexed",
+            record_count=1,
+        )
+
+        initial_count = len(structured.get_all_records())
+        self.assertEqual(initial_count, 1)
+
+        # Mock S3Service to fail during listing
+        with patch("app.services.s3_service.S3Service.list_s3_documents") as mock_list:
+            mock_list.side_effect = S3AccessError("Simulated network failure during rebuild")
+            with patch("app.services.s3_service.S3Service.is_configured", return_value=True):
+                with self.assertRaises(Exception):
+                    sync_all_pipeline(force_rebuild=True)
+
+        # Working index MUST BE PRESERVED!
+        self.assertEqual(len(structured.get_all_records()), 1)
+        self.assertEqual(structured.get_all_records()[0]["property_name"], "Working Active Listing")
+        self.assertIsNotNone(registry.get("active_inventory.csv"))
+
+    # 26. Vector Store Persistence Error Propagation
+    def test_vector_store_persistence_error_propagation(self):
+        """Verifies that _save_to_disk raises IOError instead of swallowing errors when disk write fails."""
+        store = FaissVectorStore(index_dir=self.vector_dir)
+        store.chunks_metadata = [{"chunk_id": "c1", "text": "sample", "source": "test.pdf"}]
+        store.vectors = [[0.1] * store.dimension]
+
+        # Patch metadata_file open to raise PermissionError
+        with patch("builtins.open", side_effect=PermissionError("Disk is write protected")):
+            with self.assertRaises(IOError):
+                store._save_to_disk()
+
+    # 27. Structured Property Retrieval Location Filter Strictness
+    def test_structured_property_location_filter_strictness(self):
+        """Verifies that search_properties does NOT drop or relax location filters when no match exists."""
+        records = [
+            {"property_name": "OMR Tower", "bhk": 2, "price": 6000000, "location": "OMR", "property_type": "Apartment"},
+            {"property_name": "Porur Villa", "bhk": 2, "price": 6500000, "location": "Porur", "property_type": "Villa"},
+        ]
+        # Querying for a location not in records ("Adyar")
+        results = search_properties({"bhk": 2, "location": "Adyar"}, records, limit=5)
+        # Must return empty list, NOT relax and return OMR or Porur!
+        self.assertEqual(len(results), 0)
+
+    # 28. Staged Rebuild Activates Atomically On Success
+    def test_staged_rebuild_activates_atomically_on_success(self):
+        """Verifies that force_rebuild successfully rebuilds and atomically replaces working records."""
+        from app.main import sync_all_pipeline, get_structured_store, get_document_registry
+
+        structured = get_structured_store()
+        registry = get_document_registry()
+        structured.clear()
+
+        # Place new document in isolated test cache
+        doc_path = self.cache_dir / "new_rebuild_catalog.csv"
+        doc_path.write_text("property_name,bhk,price\nRebuilt Success Tower,3,9500000\n", encoding="utf-8")
+
+        with patch("app.services.s3_service.S3Service.is_configured", return_value=False):
+            with patch.dict(os.environ, {"DOCUMENT_CACHE_PATH": str(self.cache_dir), "ALLOW_LOCAL_FALLBACK": "true"}):
+                result = sync_all_pipeline(force_rebuild=True)
+
+        self.assertEqual(result["status"], "success")
+        self.assertTrue(len(structured.get_all_records()) >= 1)
+        self.assertTrue(any(r["property_name"] == "Rebuilt Success Tower" for r in structured.get_all_records()))
+
+    # 29. Concurrent Upload Atomic Collision Rejection via IfNoneMatch
+    def test_s3_upload_concurrent_conditional_rejection(self):
+        """
+        Verifies that upload_document rejects overwriting even when head_object reports 404
+        if a concurrent upload completes first and S3 put_object returns PreconditionFailed (412).
+        """
+        s3 = S3Service(bucket_name="test-bucket", prefix="documents/", cache_dir=self.cache_dir)
+        mock_client = MagicMock()
+        
+        # head_object reports 404 (pretending race window where key didn't exist yet)
+        mock_client.head_object.side_effect = ClientError({"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject")
+        # put_object rejects with PreconditionFailed (IfNoneMatch='*')
+        mock_client.put_object.side_effect = ClientError({"Error": {"Code": "PreconditionFailed", "Message": "At least one precondition failed"}}, "PutObject")
+        s3._s3_client = mock_client
+
+        test_file = self.cache_dir / "race_condition_doc.pdf"
+        test_file.write_bytes(b"sample pdf data")
+
+        with self.assertRaises(FileExistsError):
+            s3.upload_document(test_file)
+
+        mock_client.put_object.assert_called_once()
+        self.assertEqual(mock_client.put_object.call_args[1]["IfNoneMatch"], "*")
+
+    # 30. Staged Rebuild Transactional Rollback on Mid-Activation Failure
+    def test_staged_rebuild_transactional_rollback_on_mid_activation_failure(self):
+        """
+        Verifies that if an exception occurs during the activation phase of staged rebuild,
+        the in-memory structured store and registry are completely rolled back to their pre-activation state.
+        """
+        from app.main import sync_all_pipeline, get_structured_store, get_document_registry
+
+        structured = get_structured_store()
+        registry = get_document_registry()
+
+        structured.clear()
+        initial_csv = b"property_name,bhk,price\nOriginal Unbroken Tower,2,4500000"
+        structured.add_or_update(initial_csv, source_name="original_working.csv")
+        registry.register_or_update(
+            s3_key="original_working.csv",
+            filename="original_working.csv",
+            file_type="csv",
+            fingerprint="unbroken_hash",
+            status="indexed",
+            record_count=1,
+        )
+
+        # Place new document that will stage successfully
+        staged_csv = self.cache_dir / "new_to_stage.csv"
+        staged_csv.write_text("property_name,bhk,price\nNew Staged Tower,3,8000000\n", encoding="utf-8")
+
+        # Inject error during step 3 of activation (copying registry file)
+        original_copy2 = shutil.copy2
+        def copy_interceptor(src, dst, *args, **kwargs):
+            if "reg_staging" in str(src):
+                raise IOError("Simulated disk error during registry activation")
+            return original_copy2(src, dst, *args, **kwargs)
+
+        with patch("app.services.s3_service.S3Service.is_configured", return_value=False):
+            with patch.dict(os.environ, {"DOCUMENT_CACHE_PATH": str(self.cache_dir), "ALLOW_LOCAL_FALLBACK": "true"}):
+                with patch("shutil.copy2", side_effect=copy_interceptor):
+                    with self.assertRaises(IOError) as ctx:
+                        sync_all_pipeline(force_rebuild=True)
+                    self.assertIn("rolled back", str(ctx.exception).lower())
+
+        # Verify rollback preserved original in-memory data
+        records = structured.get_all_records()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["property_name"], "Original Unbroken Tower")
+        self.assertIsNotNone(registry.get("original_working.csv"))
 
 
 if __name__ == "__main__":
