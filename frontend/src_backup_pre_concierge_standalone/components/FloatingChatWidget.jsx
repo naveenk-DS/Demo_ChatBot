@@ -433,7 +433,7 @@ export default function FloatingChatWidget({
                                                                 </div>
                                                             )}
                                                         </div>
-                                                        <div className="floating-carousel-track prop-ref-carousel-track" id={`prop-track-${idx}`}>
+                                                        <div className={`floating-carousel-track prop-ref-carousel-track ${msgProperties.length === 1 ? 'single-card' : ''}`} id={`prop-track-${idx}`}>
                                                             {msgProperties.map((prop, pIdx) => (
                                                                 <PropertyDetailCard
                                                                     key={prop.property_id || pIdx}

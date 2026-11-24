@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import PropertyDetailCard from './PropertyDetailCard';
+import PropertyCardCarousel from './PropertyCardCarousel';
 
 const QUICK_SUGGESTIONS = [
     'Show me 2BHK details',
@@ -20,9 +21,8 @@ export default function ConciergeWidget({
     onSendBrochure,
     onStartOver,
     apiBaseUrl = '',
-    onToggleViewMode,
-    isStandalone = false,
 }) {
+    const [isOpen, setIsOpen] = useState(true);
     const [inputValue, setInputValue] = useState('');
     const [currentTime, setCurrentTime] = useState('07:01 pm');
     const [previewImage, setPreviewImage] = useState(null);
@@ -42,10 +42,10 @@ export default function ConciergeWidget({
 
     // Auto-scroll on new messages
     useEffect(() => {
-        if (messagesEndRef.current) {
+        if (isOpen && messagesEndRef.current) {
             messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
         }
-    }, [messages, isBusy]);
+    }, [messages, isBusy, isOpen]);
 
     const handleSubmit = (e) => {
         if (e) e.preventDefault();
@@ -69,200 +69,226 @@ export default function ConciergeWidget({
     const hasMessages = messages.length > 0;
 
     return (
-        <div className="concierge-viewport">
-            <div className="concierge-card-container">
-                {/* 1. Header with Modern Slate/Blue Theme */}
-                <header className="concierge-header">
-                    <div className="concierge-header-left">
-                        <span className="concierge-status-dot" title="AI Concierge Active" />
-                        <h2 className="concierge-title">Concierge</h2>
-                        <span className="concierge-subtitle">
-                            Website chat widget, simulated. English, Tamil, Tanglish
-                        </span>
-                    </div>
+        <>
+            {/* 1. Minimized Floating Launcher Button (Fixed at Bottom-Right corner) */}
+            {!isOpen && (
+                <button
+                    type="button"
+                    className="concierge-floating-launcher animate-fade-in"
+                    onClick={() => setIsOpen(true)}
+                    title="Open EstateAI Concierge"
+                    aria-label="Open chat"
+                >
+                    <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                    </svg>
+                </button>
+            )}
 
-                    <div className="concierge-header-right">
-                        {/* Discreet Provider Selector for Client/CTO Demo */}
-                        {setProvider && (
-                            <select
-                                className="concierge-provider-select"
-                                value={provider}
-                                onChange={(e) => setProvider(e.target.value)}
-                                title="Select LLM Engine for Demo"
-                            >
-                                <option value="gemini">Google Gemini</option>
-                                <option value="openai">OpenAI (GPT-4.1)</option>
-                                <option value="ollama">Ollama (Private)</option>
-                            </select>
-                        )}
-
-                        {onToggleViewMode && (
-                            <button
-                                type="button"
-                                className="concierge-mode-toggle-btn"
-                                onClick={onToggleViewMode}
-                                title="Switch between Full Dashboard and Concierge Widget"
-                            >
-                                {isStandalone ? 'Dashboard View' : 'Full Screen'}
-                            </button>
-                        )}
-
-                        <button
-                            type="button"
-                            className="concierge-start-over-btn"
-                            onClick={onStartOver}
-                        >
-                            Start over
-                        </button>
-                    </div>
-                </header>
-
-                {/* 2. Messages Conversation Stream */}
-                <div className="concierge-messages-body">
-                    {/* Clean Initial Welcome Screen (NO sample cards or images) */}
-                    {!hasMessages && (
-                        <div className="concierge-welcome-panel animate-fade-in">
-                            <div className="concierge-welcome-avatar">
-                                <span className="logo-symbol">⌂</span>
-                            </div>
-                            <h3 className="concierge-welcome-title">Welcome to EstateAI Concierge</h3>
-                            <p className="concierge-welcome-text">
-                                Ask me anything about property searches, BHK configurations, verified specifications, room dimensions, amenities, or pricing.
-                            </p>
-
-                            <div className="concierge-welcome-suggestions-box">
-                                <div className="concierge-welcome-label">Suggested questions:</div>
-                                <div className="concierge-welcome-chips-grid">
-                                    {QUICK_SUGGESTIONS.map((suggestion, sIdx) => (
-                                        <button
-                                            key={sIdx}
-                                            type="button"
-                                            className="concierge-suggestion-chip"
-                                            onClick={() => handleSuggestionClick(suggestion)}
-                                            disabled={isBusy}
-                                        >
-                                            {suggestion}
-                                        </button>
-                                    ))}
-                                </div>
+            {/* 2. Top-Right Corner Floating Popup (465px x 685px, matching AWS Ask AWS reference) */}
+            {isOpen && (
+                <div className="concierge-card-container">
+                    {/* Fixed Header */}
+                    <header className="concierge-header">
+                        <div className="concierge-header-left">
+                            <span className="concierge-status-dot" title="AI Concierge Online" />
+                            <div>
+                                <h2 className="concierge-title">Concierge</h2>
+                                <span className="concierge-subtitle">
+                                    Website chat widget, simulated. English, Tamil, Tanglish
+                                </span>
                             </div>
                         </div>
-                    )}
 
-                    {/* Active Conversation Messages */}
-                    {hasMessages && messages.map((m, idx) => {
-                        const isUser = m.role === 'user';
-                        const messageProps = m.properties || [];
-                        const messageImages = m.images || [];
+                        <div className="concierge-header-right">
+                            {/* Discreet Provider Selector for Client/CTO Demo */}
+                            {setProvider && (
+                                <select
+                                    className="concierge-provider-select"
+                                    value={provider}
+                                    onChange={(e) => setProvider(e.target.value)}
+                                    title="Select LLM Engine for Demo"
+                                >
+                                    <option value="gemini">Gemini</option>
+                                    <option value="openai">GPT-4.1</option>
+                                    <option value="ollama">Ollama</option>
+                                </select>
+                            )}
 
-                        return (
-                            <div
-                                key={idx}
-                                className={`concierge-msg-row ${isUser ? 'user-row' : 'assistant-row'}`}
+                            <button
+                                type="button"
+                                className="concierge-start-over-btn"
+                                onClick={onStartOver}
+                                title="Start new conversation"
                             >
-                                <div className={`concierge-bubble ${isUser ? 'user-bubble' : 'assistant-bubble'}`}>
-                                    {m.content}
+                                Start over
+                            </button>
+
+                            {/* Minimize Button */}
+                            <button
+                                type="button"
+                                className="concierge-header-icon-btn"
+                                onClick={() => setIsOpen(false)}
+                                title="Minimize chat"
+                                aria-label="Minimize"
+                            >
+                                —
+                            </button>
+
+                            {/* Close Button */}
+                            <button
+                                type="button"
+                                className="concierge-header-icon-btn close-btn"
+                                onClick={() => setIsOpen(false)}
+                                title="Close chat"
+                                aria-label="Close"
+                            >
+                                ✕
+                            </button>
+                        </div>
+                    </header>
+
+                    {/* Messages Conversation Stream (Vertically Scrollable) */}
+                    <div className="concierge-messages-body">
+                        {/* Clean Initial Welcome Screen */}
+                        {!hasMessages && (
+                            <div className="concierge-welcome-panel animate-fade-in">
+                                <div className="concierge-welcome-avatar">
+                                    <span className="logo-symbol">⌂</span>
                                 </div>
+                                <h3 className="concierge-welcome-title">Welcome to EstateAI Concierge</h3>
+                                <p className="concierge-welcome-text">
+                                    Ask me anything about property searches, BHK configurations, verified specifications, room dimensions, amenities, or pricing.
+                                </p>
 
-                                {/* Property Cards Carousel ONLY when requested by user */}
-                                {!isUser && messageProps.length > 0 && (
-                                    <div className="concierge-cards-track">
-                                        {messageProps.map((prop, pIdx) => (
-                                            <PropertyDetailCard
-                                                key={prop.property_id || pIdx}
-                                                property={prop}
-                                                index={pIdx}
-                                                currentTime={currentTime}
-                                                onSelectProperty={onSelectProperty}
-                                                onSendBrochure={onSendBrochure}
-                                                onImageClick={(imgData) => setPreviewImage(imgData)}
-                                                resolveImgUrl={resolveImgUrl}
-                                            />
-                                        ))}
-                                    </div>
-                                )}
-
-                                {/* Image Assets Carousel ONLY when images requested */}
-                                {!isUser && messageImages.length > 0 && (
-                                    <div className="concierge-images-track">
-                                        {messageImages.map((img, iIdx) => (
-                                            <div
-                                                key={iIdx}
-                                                className="concierge-image-thumb"
-                                                onClick={() => setPreviewImage({
-                                                    url: resolveImgUrl(img.url),
-                                                    title: img.property_name || img.filename,
-                                                    category: img.category,
-                                                })}
+                                <div className="concierge-welcome-suggestions-box">
+                                    <div className="concierge-welcome-label">Suggested questions:</div>
+                                    <div className="concierge-welcome-chips-grid">
+                                        {QUICK_SUGGESTIONS.map((suggestion, sIdx) => (
+                                            <button
+                                                key={sIdx}
+                                                type="button"
+                                                className="concierge-suggestion-chip"
+                                                onClick={() => handleSuggestionClick(suggestion)}
+                                                disabled={isBusy}
                                             >
-                                                <img
-                                                    src={resolveImgUrl(img.url)}
-                                                    alt={img.filename}
-                                                    loading="lazy"
-                                                />
-                                                <span className="concierge-image-label">
-                                                    {img.category ? img.category.toUpperCase() : 'PHOTO'}
-                                                </span>
-                                            </div>
+                                                {suggestion}
+                                            </button>
                                         ))}
                                     </div>
-                                )}
+                                </div>
                             </div>
-                        );
-                    })}
+                        )}
 
-                    {/* Busy Typing Indicator */}
-                    {isBusy && (
-                        <div className="concierge-msg-row assistant-row">
-                            <div className="concierge-bubble assistant-bubble concierge-typing-bubble">
-                                <span className="concierge-typing-dot" />
-                                <span className="concierge-typing-dot" />
-                                <span className="concierge-typing-dot" />
-                                <span className="concierge-typing-label">{busyStatus}</span>
+                        {/* Active Conversation Messages */}
+                        {hasMessages && messages.map((m, idx) => {
+                            const isUser = m.role === 'user';
+                            const messageProps = m.properties || [];
+                            const messageImages = m.images || [];
+
+                            return (
+                                <div
+                                    key={idx}
+                                    className={`concierge-msg-row ${isUser ? 'user-row' : 'assistant-row'}`}
+                                >
+                                    <div className={`concierge-bubble ${isUser ? 'user-bubble' : 'assistant-bubble'}`}>
+                                        {m.content}
+                                    </div>
+
+                                    {/* One-card-at-a-time Property Carousel with Prev/Next controls */}
+                                    {!isUser && messageProps.length > 0 && (
+                                        <PropertyCardCarousel
+                                            properties={messageProps}
+                                            currentTime={currentTime}
+                                            onSelectProperty={onSelectProperty}
+                                            onSendBrochure={onSendBrochure}
+                                            onImageClick={(imgData) => setPreviewImage(imgData)}
+                                            resolveImgUrl={resolveImgUrl}
+                                        />
+                                    )}
+
+                                    {/* Image Assets Carousel in message area */}
+                                    {!isUser && messageImages.length > 0 && (
+                                        <div className="concierge-images-track">
+                                            {messageImages.map((img, iIdx) => (
+                                                <div
+                                                    key={iIdx}
+                                                    className="concierge-image-thumb"
+                                                    onClick={() => setPreviewImage({
+                                                        url: resolveImgUrl(img.url),
+                                                        title: img.property_name || img.filename,
+                                                        category: img.category,
+                                                    })}
+                                                >
+                                                    <img
+                                                        src={resolveImgUrl(img.url)}
+                                                        alt={img.filename}
+                                                        loading="lazy"
+                                                    />
+                                                    <span className="concierge-image-label">
+                                                        {img.category ? img.category.toUpperCase() : 'PHOTO'}
+                                                    </span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })}
+
+                        {/* Busy Typing Indicator */}
+                        {isBusy && (
+                            <div className="concierge-msg-row assistant-row">
+                                <div className="concierge-bubble assistant-bubble concierge-typing-bubble">
+                                    <span className="concierge-typing-dot" />
+                                    <span className="concierge-typing-dot" />
+                                    <span className="concierge-typing-dot" />
+                                    <span className="concierge-typing-label">{busyStatus}</span>
+                                </div>
                             </div>
+                        )}
+
+                        <div ref={messagesEndRef} />
+                    </div>
+
+                    {/* Quick Suggestion Chips */}
+                    {hasMessages && (
+                        <div className="concierge-suggestions-bar">
+                            {QUICK_SUGGESTIONS.map((suggestion, sIdx) => (
+                                <button
+                                    key={sIdx}
+                                    type="button"
+                                    className="concierge-suggestion-chip"
+                                    onClick={() => handleSuggestionClick(suggestion)}
+                                    disabled={isBusy}
+                                >
+                                    {suggestion}
+                                </button>
+                            ))}
                         </div>
                     )}
 
-                    <div ref={messagesEndRef} />
+                    {/* Fixed Bottom Input Bar */}
+                    <form className="concierge-input-form" onSubmit={handleSubmit}>
+                        <input
+                            ref={inputRef}
+                            type="text"
+                            className="concierge-text-input"
+                            placeholder="e.g. 3 BHK under 1.5 crore near OMR, east facing"
+                            value={inputValue}
+                            onChange={(e) => setInputValue(e.target.value)}
+                            disabled={isBusy}
+                        />
+                        <button
+                            type="submit"
+                            className="concierge-send-btn"
+                            disabled={!inputValue.trim() || isBusy}
+                        >
+                            Send
+                        </button>
+                    </form>
                 </div>
-
-                {/* 3. Quick Suggestions Rounded Chips (visible during conversation as well) */}
-                {hasMessages && (
-                    <div className="concierge-suggestions-bar">
-                        {QUICK_SUGGESTIONS.map((suggestion, sIdx) => (
-                            <button
-                                key={sIdx}
-                                type="button"
-                                className="concierge-suggestion-chip"
-                                onClick={() => handleSuggestionClick(suggestion)}
-                                disabled={isBusy}
-                            >
-                                {suggestion}
-                            </button>
-                        ))}
-                    </div>
-                )}
-
-                {/* 4. Bottom Input Bar Fixed at Bottom */}
-                <form className="concierge-input-form" onSubmit={handleSubmit}>
-                    <input
-                        ref={inputRef}
-                        type="text"
-                        className="concierge-text-input"
-                        placeholder="e.g. 3 BHK under 1.5 crore near OMR, east facing"
-                        value={inputValue}
-                        onChange={(e) => setInputValue(e.target.value)}
-                        disabled={isBusy}
-                    />
-                    <button
-                        type="submit"
-                        className="concierge-send-btn"
-                        disabled={!inputValue.trim() || isBusy}
-                    >
-                        Send
-                    </button>
-                </form>
-            </div>
+            )}
 
             {/* Lightbox Image Preview Dialog */}
             {previewImage && (
@@ -285,14 +311,21 @@ export default function ConciergeWidget({
                                 ✕
                             </button>
                         </div>
-                        <img
-                            src={previewImage.url}
-                            alt={previewImage.title || 'Property view'}
-                            className="concierge-lightbox-img"
-                        />
+                        {previewImage.url && (
+                            <img
+                                src={previewImage.url}
+                                alt={previewImage.title || 'Property view'}
+                                className="concierge-lightbox-img"
+                            />
+                        )}
+                        {previewImage.specs && (
+                            <div className="concierge-lightbox-specs">
+                                {previewImage.specs}
+                            </div>
+                        )}
                     </div>
                 </div>
             )}
-        </div>
+        </>
     );
 }
