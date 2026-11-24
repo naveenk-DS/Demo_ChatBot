@@ -86,3 +86,4 @@ def acquire_indexing_lock(timeout_seconds: float = 30.0, lock_path: Optional[Pat
 
         _THREAD_LOCK.release()
         logger.debug("Released exclusive indexing lock.")
+
