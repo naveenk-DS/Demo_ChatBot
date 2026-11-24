@@ -95,24 +95,55 @@ class FaissVectorStore:
                 self.vectors = []
 
     def _save_to_disk(self):
-        """Persists index, vectors, metadata, and fingerprints to disk."""
+        """Persists index, vectors, metadata, and fingerprints to disk using atomic rename operations."""
         try:
-            with open(self.metadata_file, "w", encoding="utf-8") as f:
+            # 1. Atomic write for metadata.json
+            tmp_meta = self.metadata_file.with_suffix(".json.tmp")
+            with open(tmp_meta, "w", encoding="utf-8") as f:
                 json.dump(self.chunks_metadata, f, indent=2)
+            tmp_meta.replace(self.metadata_file)
 
-            with open(self.fingerprints_file, "w", encoding="utf-8") as f:
+            # 2. Atomic write for fingerprints.json
+            tmp_fing = self.fingerprints_file.with_suffix(".json.tmp")
+            with open(tmp_fing, "w", encoding="utf-8") as f:
                 json.dump(self.fingerprints, f, indent=2)
+            tmp_fing.replace(self.fingerprints_file)
 
+            # 3. Atomic write for vectors.npy
             if self.vectors:
                 arr = np.array(self.vectors, dtype=np.float32)
-                np.save(str(self.vectors_file), arr)
+                tmp_vec = self.vectors_file.parent / f"{self.vectors_file.stem}_tmp.npy"
+                np.save(str(tmp_vec), arr)
+                tmp_vec.replace(self.vectors_file)
+            elif self.vectors_file.exists():
+                self.vectors_file.unlink(missing_ok=True)
 
+            # 4. Atomic write for index.faiss
             if _HAS_FAISS and self.index is not None:
-                faiss.write_index(self.index, str(self.index_file))
+                tmp_faiss = self.index_file.with_suffix(".faiss.tmp")
+                faiss.write_index(self.index, str(tmp_faiss))
+                tmp_faiss.replace(self.index_file)
+            elif self.index_file.exists():
+                self.index_file.unlink(missing_ok=True)
 
-            logger.info("Saved vector index (%d items) to %s", len(self.chunks_metadata), self.index_dir)
+            logger.info("Atomically saved vector index (%d items) to %s", len(self.chunks_metadata), self.index_dir)
         except Exception as e:
             logger.error("Failed to save vector store to disk: %s", e)
+
+    def clear_all(self) -> None:
+        """Clears all in-memory and on-disk vector store records."""
+        self.vectors = []
+        self.chunks_metadata = []
+        self.fingerprints = {}
+        if _HAS_FAISS:
+            self.index = None
+        for f in (self.metadata_file, self.fingerprints_file, self.vectors_file, self.index_file):
+            if f.exists():
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
+        logger.info("Cleared all vector store data in %s", self.index_dir)
 
     def is_document_indexed(self, filename: str, file_hash: str) -> bool:
         """Checks if document has already been indexed with matching hash."""

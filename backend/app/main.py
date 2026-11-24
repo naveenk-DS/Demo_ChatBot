@@ -26,8 +26,9 @@ from app.rag.retriever import retrieve_relevant_chunks
 from app.rag.store import get_vector_store
 from app.schemas import ChatRequest, EnquiryRequest, SearchFilters
 from app.services.bedrock_service import BedrockService
-from app.services.s3_service import S3Service
+from app.services.s3_service import S3Service, S3AccessError, S3PaginationError
 from app.services.document_registry import DocumentRegistry, get_document_registry
+from app.services.lock_service import acquire_indexing_lock, IndexingConflictError
 from app.rag.loader import load_single_pdf
 from app.data_pipeline.structured import (
     load_csv,
@@ -126,11 +127,14 @@ def sync_all_pipeline(force_rebuild: bool = False) -> dict[str, Any]:
     Performs dynamic, incremental synchronization across Amazon S3, Document Registry,
     Structured Data Store, and FAISS Vector Store.
     
+    Protected by inter-process and thread locking to prevent concurrent indexing corruption.
+    
     Handles:
     - Dynamic discovery of arbitrary number of documents via list_objects_v2 pagination
-    - Incremental ingestion of new CSV, XLSX, JSON, and PDF files
+    - Incremental ingestion of new CSV, XLS, XLSX, JSON, and PDF files
     - Automatic removal of stale records and vector chunks when files are modified or deleted
     - Resilient recovery on EC2 restart
+    - Full rebuilding when force_rebuild=True
     """
     global VERIFIED_PROPERTIES
     s3_service = S3Service()
@@ -139,73 +143,80 @@ def sync_all_pipeline(force_rebuild: bool = False) -> dict[str, Any]:
     vector_store = get_vector_store()
     bedrock = BedrockService()
 
-    logger.info("Executing incremental document synchronization pipeline...")
-    sync_manifest = s3_service.sync_documents_incremental(registry)
+    with acquire_indexing_lock(timeout_seconds=30.0):
+        if force_rebuild:
+            logger.info("Executing full pipeline rebuild: purging structured records, vector index, and registry cache.")
+            structured_store.clear()
+            vector_store.clear_all()
+            registry.clear()
 
-    # 1. Handle deleted documents (purge from structured store & FAISS)
-    for deleted_key in sync_manifest["deleted"]:
-        filename = Path(deleted_key).name
-        ext = Path(filename).suffix.lower()
+        logger.info("Executing incremental document synchronization pipeline...")
+        sync_manifest = s3_service.sync_documents_incremental(registry)
 
-        if ext in (".csv", ".xlsx", ".xls", ".json"):
-            purged = structured_store.remove(filename)
-            logger.info("Purged %d structured record(s) for deleted file '%s'", purged, filename)
-        elif ext == ".pdf":
-            purged = vector_store.remove_document(filename)
-            logger.info("Purged %d vector chunk(s) for deleted PDF '%s'", purged, filename)
+        # 1. Handle deleted documents (purge from structured store & FAISS)
+        for deleted_key in sync_manifest["deleted"]:
+            filename = Path(deleted_key).name
+            ext = Path(filename).suffix.lower()
 
-        registry.mark_deleted(deleted_key)
-
-    # 2. Process newly added or modified documents
-    targets_to_process = sync_manifest["new"] + sync_manifest["modified"]
-    for path in targets_to_process:
-        ext = path.suffix.lower()
-        filename = path.name
-        f_hash = s3_service.compute_file_hash(path)
-
-        registry.update_status(filename, status="processing")
-
-        try:
             if ext in (".csv", ".xlsx", ".xls", ".json"):
-                count = structured_store.add_or_update(path, source_name=filename)
-                registry.update_status(filename, status="indexed", record_count=count, fingerprint=f_hash)
+                purged = structured_store.remove(filename)
+                logger.info("Purged %d structured record(s) for deleted file '%s'", purged, filename)
             elif ext == ".pdf":
-                if bedrock.has_credentials():
-                    pdf_docs = load_single_pdf(path)
-                    chunk_count = vector_store.add_documents(pdf_docs, filename=filename, file_hash=f_hash)
-                    registry.update_status(filename, status="indexed", chunk_count=chunk_count, fingerprint=f_hash)
-                else:
-                    registry.update_status(
-                        filename,
-                        status="pending",
-                        fingerprint=f_hash,
-                        error_message="Bedrock credentials deferred on local environment",
-                    )
-        except Exception as proc_err:
-            logger.error("Failed processing document '%s': %s", filename, proc_err)
-            registry.update_status(filename, status="failed", error_message=str(proc_err))
+                purged = vector_store.remove_document(filename)
+                logger.info("Purged %d vector chunk(s) for deleted PDF '%s'", purged, filename)
 
-    # 3. Ensure unchanged structured files are present in memory (e.g. after EC2 reboot)
-    for path in sync_manifest["unchanged"]:
-        ext = path.suffix.lower()
-        filename = path.name
-        if ext in (".csv", ".xlsx", ".xls", ".json"):
-            if filename not in structured_store.records_by_source:
-                structured_store.add_or_update(path, source_name=filename)
+            registry.mark_deleted(deleted_key)
 
-    VERIFIED_PROPERTIES = structured_store.get_all_records()
-    logger.info("Sync pipeline complete. Verified properties: %d | Active documents: %d", len(VERIFIED_PROPERTIES), len(registry.list_active()))
+        # 2. Process newly added or modified documents
+        targets_to_process = sync_manifest["new"] + sync_manifest["modified"]
+        for path in targets_to_process:
+            ext = path.suffix.lower()
+            filename = path.name
+            f_hash = s3_service.compute_file_hash(path)
 
-    return {
-        "verified_properties": len(VERIFIED_PROPERTIES),
-        "manifest": {
-            "new": [p.name for p in sync_manifest["new"]],
-            "modified": [p.name for p in sync_manifest["modified"]],
-            "deleted": sync_manifest["deleted"],
-            "unchanged": [p.name for p in sync_manifest["unchanged"]],
-            "failed": sync_manifest["failed"],
-        },
-    }
+            registry.update_status(filename, status="processing")
+
+            try:
+                if ext in (".csv", ".xlsx", ".xls", ".json"):
+                    count = structured_store.add_or_update(path, source_name=filename)
+                    registry.update_status(filename, status="indexed", record_count=count, fingerprint=f_hash)
+                elif ext == ".pdf":
+                    if bedrock.has_credentials():
+                        pdf_docs = load_single_pdf(path)
+                        chunk_count = vector_store.add_documents(pdf_docs, filename=filename, file_hash=f_hash)
+                        registry.update_status(filename, status="indexed", chunk_count=chunk_count, fingerprint=f_hash)
+                    else:
+                        registry.update_status(
+                            filename,
+                            status="pending",
+                            fingerprint=f_hash,
+                            error_message="Bedrock credentials deferred on local environment",
+                        )
+            except Exception as proc_err:
+                logger.error("Failed processing document '%s': %s", filename, proc_err)
+                registry.update_status(filename, status="failed", error_message=str(proc_err))
+
+        # 3. Ensure unchanged structured files are present in memory (e.g. after EC2 reboot)
+        for path in sync_manifest["unchanged"]:
+            ext = path.suffix.lower()
+            filename = path.name
+            if ext in (".csv", ".xlsx", ".xls", ".json"):
+                if filename not in structured_store.records_by_source:
+                    structured_store.add_or_update(path, source_name=filename)
+
+        VERIFIED_PROPERTIES = structured_store.get_all_records()
+        logger.info("Sync pipeline complete. Verified properties: %d | Active documents: %d", len(VERIFIED_PROPERTIES), len(registry.list_active()))
+
+        return {
+            "verified_properties": len(VERIFIED_PROPERTIES),
+            "manifest": {
+                "new": [p.name for p in sync_manifest["new"]],
+                "modified": [p.name for p in sync_manifest["modified"]],
+                "deleted": sync_manifest["deleted"],
+                "unchanged": [p.name for p in sync_manifest["unchanged"]],
+                "failed": sync_manifest["failed"],
+            },
+        }
 
 
 def load_all_structured_data() -> list[dict[str, Any]]:
@@ -394,8 +405,13 @@ async def upload_document(request: Request, filename: Optional[str] = None):
     # Upload to S3 if configured
     s3_service.upload_document(dest)
 
-    # Incrementally re-sync pipeline
-    sync_result = sync_all_pipeline()
+    try:
+        sync_result = sync_all_pipeline()
+    except IndexingConflictError as conflict_err:
+        raise HTTPException(status_code=409, detail=str(conflict_err))
+    except S3AccessError as s3_err:
+        raise HTTPException(status_code=503, detail=f"S3 storage error: {s3_err}")
+
     registry = get_document_registry()
     doc_entry = registry.get(target_name)
 
@@ -406,6 +422,26 @@ async def upload_document(request: Request, filename: Optional[str] = None):
         "document": doc_entry,
         "sync_summary": sync_result,
     }
+
+
+@app.post("/api/documents/reindex")
+def reindex_documents(force_rebuild: bool = False):
+    """
+    Manually triggers full document synchronization and allows full index rebuilds.
+    Retries previously failed documents.
+    """
+    try:
+        sync_result = sync_all_pipeline(force_rebuild=force_rebuild)
+        return {
+            "status": "success",
+            "message": "Manual reindexing completed successfully",
+            "force_rebuild": force_rebuild,
+            "summary": sync_result,
+        }
+    except IndexingConflictError as conflict_err:
+        raise HTTPException(status_code=409, detail=str(conflict_err))
+    except S3AccessError as s3_err:
+        raise HTTPException(status_code=503, detail=f"S3 access failure: {s3_err}")
 
 
 @app.post("/api/enquiries")

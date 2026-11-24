@@ -30,6 +30,8 @@ backend/enquiries.db
 backend/data/chroma_db/
 backend/data/faiss_index/
 backend/data/document_registry.json
+backend/data/.indexing.lock
+*.lock
 backend_backup_pre_refactor/
 
 # IDE & OS

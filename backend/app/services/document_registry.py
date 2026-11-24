@@ -180,6 +180,13 @@ class DocumentRegistry:
                     return True
         return False
 
+    def clear(self) -> None:
+        """Clears all registry entries and updates persistent file."""
+        with self._lock:
+            self._registry.clear()
+        self.save()
+        logger.info("Cleared all entries in document registry: %s", self.registry_file)
+
     def get(self, s3_key_or_filename: str) -> Optional[dict[str, Any]]:
         """Retrieves an entry by S3 key or filename."""
         with self._lock:
@@ -219,3 +226,4 @@ def get_document_registry() -> DocumentRegistry:
     if _GLOBAL_REGISTRY is None:
         _GLOBAL_REGISTRY = DocumentRegistry()
     return _GLOBAL_REGISTRY
+

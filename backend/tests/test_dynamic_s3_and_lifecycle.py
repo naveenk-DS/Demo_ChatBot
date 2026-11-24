@@ -47,7 +47,8 @@ from app.rag.retriever import DynamicBM25, hybrid_search, retrieve_relevant_chun
 from app.rag.store import FaissVectorStore
 from app.services.bedrock_service import BedrockService
 from app.services.document_registry import DocumentRegistry
-from app.services.s3_service import S3Service
+from app.services.lock_service import acquire_indexing_lock, IndexingConflictError
+from app.services.s3_service import S3Service, S3AccessError, S3PaginationError
 
 
 class TestDynamicS3AndLifecycle(unittest.TestCase):
@@ -96,7 +97,8 @@ class TestDynamicS3AndLifecycle(unittest.TestCase):
         mock_client.get_paginator.return_value = mock_paginator
         s3._s3_client = mock_client
 
-        docs = s3.list_s3_documents()
+        docs, complete = s3.list_s3_documents()
+        self.assertTrue(complete)
         self.assertEqual(len(docs), 6)
         self.assertIn("documents/doc1.csv", docs)
         self.assertIn("documents/doc6_sixth_catalog.csv", docs)
@@ -122,29 +124,87 @@ class TestDynamicS3AndLifecycle(unittest.TestCase):
         mock_client.get_paginator.return_value = mock_paginator
         s3._s3_client = mock_client
 
-        docs = s3.list_s3_documents()
+        docs, complete = s3.list_s3_documents()
+        self.assertTrue(complete)
         self.assertEqual(len(docs), 1)
         self.assertIn("documents/valid.pdf", docs)
         self.assertNotIn("documents/unsupported.docx", docs)
 
-    # 3. S3 permission failure graceful fallback
-    def test_s3_permission_failure_fallback(self):
-        """Verifies that an S3 permission failure (AccessDenied) gracefully falls back to local cache."""
+    # 3. S3 AccessDenied raises in production mode (no silent fallback to stale local data)
+    def test_s3_access_denied_raises_in_production_mode(self):
+        """
+        Critical safety test: Verifies that S3 AccessDenied or credential failure
+        raises S3AccessError in production mode and NEVER silently falls back to stale data.
+        """
+        s3 = S3Service(bucket_name="prod-bucket", prefix="documents/", cache_dir=self.cache_dir)
+        mock_client = MagicMock()
+        error_response = {"Error": {"Code": "AccessDenied", "Message": "Access Denied to S3 bucket in production"}}
+        mock_client.get_paginator.side_effect = ClientError(error_response, "ListObjectsV2")
+        s3._s3_client = mock_client
+
+        # Place stale local file
+        local_stale = self.cache_dir / "stale_local.csv"
+        local_stale.write_text("property_name,bhk,price\nStale Listing,2,1000000", encoding="utf-8")
+
+        reg = DocumentRegistry(self.registry_file)
+        
+        # In production mode (allow_fallback=False), must raise S3AccessError!
+        with self.assertRaises(S3AccessError):
+            s3.sync_documents_incremental(reg, allow_fallback=False)
+
+    # 3B. S3 permission failure fallback only when explicitly permitted in test/dev
+    def test_s3_permission_failure_fallback_when_permitted(self):
+        """Verifies that an S3 permission failure falls back to local cache only when explicitly permitted."""
         s3 = S3Service(bucket_name="test-bucket", prefix="documents/", cache_dir=self.cache_dir)
         mock_client = MagicMock()
         error_response = {"Error": {"Code": "AccessDenied", "Message": "Access Denied to S3 bucket"}}
         mock_client.get_paginator.side_effect = ClientError(error_response, "ListObjectsV2")
         s3._s3_client = mock_client
 
-        # Create a local fallback file
         local_file = self.cache_dir / "fallback_sample.csv"
         local_file.write_text("property_name,bhk,price\nFallback Haven,2,7500000", encoding="utf-8")
 
         reg = DocumentRegistry(self.registry_file)
-        sync_result = s3.sync_documents_incremental(reg)
+        sync_result = s3.sync_documents_incremental(reg, allow_fallback=True)
 
-        # Should fall back cleanly without raising unhandled exception
         self.assertTrue(len(sync_result["new"]) >= 1 or len(sync_result["unchanged"]) >= 1)
+
+    # 3C. Mid-pagination failure aborts deletion reconciliation
+    def test_partial_pagination_failure_aborts_deletion_reconciliation(self):
+        """
+        Critical safety test: If pagination fails midway, deletion reconciliation
+        must NOT run to prevent false deletions of existing documents.
+        """
+        s3 = S3Service(bucket_name="test-bucket", prefix="documents/", cache_dir=self.cache_dir)
+        mock_client = MagicMock()
+        mock_paginator = MagicMock()
+
+        # Page 1 succeeds, Page 2 raises error midway
+        page1 = {
+            "Contents": [
+                {"Key": "documents/doc1.csv", "Size": 100, "ETag": '"h1"'},
+            ]
+        }
+        
+        def mock_paginate_generator(*args, **kwargs):
+            yield page1
+            raise ClientError({"Error": {"Code": "ConnectionReset", "Message": "Network reset"}}, "ListObjectsV2")
+
+        mock_paginator.paginate = mock_paginate_generator
+        mock_client.get_paginator.return_value = mock_paginator
+        s3._s3_client = mock_client
+
+        # Pre-seed registry with doc1 and doc2
+        reg = DocumentRegistry(self.registry_file)
+        reg.register_or_update(s3_key="documents/doc1.csv", filename="doc1.csv", file_type="csv", fingerprint="h1", status="indexed")
+        reg.register_or_update(s3_key="documents/doc2.csv", filename="doc2.csv", file_type="csv", fingerprint="h2", status="indexed")
+
+        # Must raise S3PaginationError and NOT delete doc2
+        with self.assertRaises(S3PaginationError):
+            s3.sync_documents_incremental(reg, allow_fallback=False)
+
+        # doc2 must remain active in registry!
+        self.assertEqual(reg.get("documents/doc2.csv")["status"], "indexed")
 
     # 4. Adding a sixth document dynamically
     def test_add_sixth_document_dynamically(self):
@@ -385,6 +445,88 @@ class TestDynamicS3AndLifecycle(unittest.TestCase):
         # Verify both documents have non-zero relevance for multi-topic query
         matched_docs = {chunks[idx]["source"] for idx, score in results}
         self.assertIn("Document_A_Aquagrove.pdf", matched_docs)
+
+    # 13. Concurrent indexing lock protection
+    def test_concurrent_indexing_lock_protection(self):
+        """
+        Verifies that when an indexing lock is held, a second attempt to acquire
+        the lock raises IndexingConflictError, protecting against concurrent corruptions.
+        """
+        lock_file = Path(self.test_dir) / ".test_indexing.lock"
+        with acquire_indexing_lock(timeout_seconds=2.0, lock_path=lock_file):
+            # Attempting to re-acquire the lock concurrently in the same thread/process
+            with self.assertRaises(IndexingConflictError):
+                with acquire_indexing_lock(timeout_seconds=0.2, lock_path=lock_file):
+                    pass
+
+    # 14. Atomic FAISS persistence
+    def test_atomic_faiss_persistence(self):
+        """Verifies that vector store persistence creates clean atomic files."""
+        store = FaissVectorStore(index_dir=self.vector_dir)
+        store.chunks_metadata = [{"chunk_id": "c1", "text": "sample", "source": "test.pdf"}]
+        store.vectors = [[0.1] * store.dimension]
+        store.fingerprints = {"test.pdf": "hash123"}
+        
+        store._save_to_disk()
+        
+        self.assertTrue(store.metadata_file.exists())
+        self.assertTrue(store.fingerprints_file.exists())
+        self.assertTrue(store.vectors_file.exists())
+        # Ensure temporary files are replaced and no .tmp remains
+        self.assertFalse(store.metadata_file.with_suffix(".json.tmp").exists())
+        self.assertFalse(store.fingerprints_file.with_suffix(".json.tmp").exists())
+
+    # 15. All supported file formats parsers functional
+    def test_all_supported_parsers_functional(self):
+        """Verifies that each supported format (CSV, XLS/XLSX, JSON, Nested JSON, PDF) has an active functioning parser."""
+        from app.rag.loader import load_single_pdf
+
+        # CSV
+        csv_bytes = b"property_name,bhk,price\nCSV Unit,2,6000000"
+        csv_recs = load_csv(csv_bytes, "test.csv")
+        self.assertEqual(len(csv_recs), 1)
+
+        # JSON Flat
+        json_bytes = json.dumps([{"title": "JSON Flat", "bhk": 3, "price": 9000000}]).encode("utf-8")
+        json_recs = load_json(json_bytes, "flat.json")
+        self.assertEqual(len(json_recs), 1)
+
+        # JSON Nested
+        nested_bytes = json.dumps({"status": "ok", "payload": {"data": [{"name": "Nested Unit", "bedrooms": 2, "cost": 7500000}]}}).encode("utf-8")
+        nested_recs = load_json(nested_bytes, "nested.json")
+        self.assertEqual(len(nested_recs), 1)
+
+        # Excel (XLSX)
+        try:
+            import openpyxl
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.append(["property_name", "bhk", "price"])
+            ws.append(["Excel Unit", 3, 8500000])
+            buf = io.BytesIO()
+            wb.save(buf)
+            buf.seek(0)
+            xlsx_recs = load_excel(buf, "test.xlsx")
+            self.assertEqual(len(xlsx_recs), 1)
+        except ImportError:
+            pass
+
+        # PDF (create valid minimal 1-page PDF using PyMuPDF)
+        try:
+            import fitz
+            doc = fitz.open()
+            page = doc.new_page()
+            page.insert_text((50, 72), "Casagrand Aquagrove - 2BHK Master Bedroom Specifications")
+            pdf_path = Path(self.test_dir) / "test_spec.pdf"
+            doc.save(str(pdf_path))
+            doc.close()
+
+            pdf_docs = load_single_pdf(pdf_path)
+            self.assertEqual(len(pdf_docs), 1)
+            self.assertEqual(pdf_docs[0]["page"], 1)
+            self.assertIn("Specifications", pdf_docs[0]["property_name"])
+        except ImportError:
+            pass
 
 
 if __name__ == "__main__":

@@ -214,20 +214,22 @@ def load_csv(file_input: Union[str, Path, bytes, io.BytesIO], source_name: str =
 
 
 def load_excel(file_input: Union[str, Path, bytes, io.BytesIO], source_name: str = "data.xlsx") -> list[dict[str, Any]]:
-    """Loads records from an Excel workbook, parsing all sheets using Pandas or openpyxl."""
+    """Loads records from an Excel workbook (.xlsx or .xls), parsing all sheets using Pandas or openpyxl."""
+    ext = Path(source_name).suffix.lower()
     if _HAS_PANDAS:
         try:
-            engine = "openpyxl"
+            engine = "openpyxl" if ext in (".xlsx", ".xlsm") else None
+            excel_kwargs = {"engine": engine} if engine else {}
             if isinstance(file_input, bytes):
                 buffer = io.BytesIO(file_input)
-                excel_file = pd.ExcelFile(buffer, engine=engine)
+                excel_file = pd.ExcelFile(buffer, **excel_kwargs)
             elif isinstance(file_input, io.BytesIO):
-                excel_file = pd.ExcelFile(file_input, engine=engine)
+                excel_file = pd.ExcelFile(file_input, **excel_kwargs)
             else:
                 path = Path(file_input)
                 if not path.exists():
                     return []
-                excel_file = pd.ExcelFile(path, engine=engine)
+                excel_file = pd.ExcelFile(path, **excel_kwargs)
 
             all_records: list[dict[str, Any]] = []
             for sheet_name in excel_file.sheet_names:
