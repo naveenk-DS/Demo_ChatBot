@@ -1,0 +1,7 @@
+property_id,property_name,bhk,price,sqft,location,city,property_type,facing,floor,property_status,description,amenities,image_url
+CHN-2BHK-101,Marina Bay Heights 2BHK,2,7800000,1080,Thoraipakkam,Chennai,Apartment,North facing,3rd Floor,Ready to move,Modern 2BHK flat near Toll Gate with modular kitchen and covered car parking,"Gym, Lift, Power Backup, CCTV",/api/assets/images/Bedroom.jpg
+CHN-2BHK-102,Emerald Greens 2BHK,2,8200000,1140,Guindy,Chennai,Apartment,East facing,6th Floor,Ready to move,Centrally located 2BHK apartment 5 mins from Metro Station with high rental yield,"Clubhouse, Swimming Pool, 24/7 Security",/api/assets/images/bedroom.jpg.2.jpg
+CHN-3BHK-201,Royal Palm Residency 3BHK,3,13500000,1520,Anna Nagar,Chennai,Apartment,North-East,5th Floor,Ready to move,Prestigious residential address in West Chennai with wide balconies and landscaped gardens,"Gym, Clubhouse, Children Play Area, Intercom",/api/assets/images/Bedroom.jpg
+CHN-3BHK-202,Azure Waterfront 3BHK,3,14200000,1610,Kotturpuram,Chennai,Apartment,East facing,8th Floor,Ready to move,Super luxury 3BHK overlooking Adyar river with Italian marble and VRV air conditioning,"Rooftop Lounge, Swimming Pool, Valet Parking",/api/assets/images/bedroom.jpg.2.jpg
+CHN-4BHK-301,The Sovereign Estate 4BHK,4,26500000,2950,Boat Club Road,Chennai,Apartment,North facing,10th Floor,Ready to move,Exclusive ultra-luxury apartment in Chennai's most coveted enclave with private lobby,"Private Lift, Banquet Hall, Spa, Concierge",/api/assets/images/Bedroom.jpg
+

@@ -1,0 +1,21 @@
+[Unit]
+Description=EstateAI FastAPI Backend Service
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/var/www/estateai/backend
+Environment="PATH=/var/www/estateai/backend/.venv/bin:/usr/local/bin:/usr/bin"
+EnvironmentFile=/var/www/estateai/backend/.env
+ExecStart=/var/www/estateai/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 2
+
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=estateai-backend
+
+[Install]
+WantedBy=multi-user.target

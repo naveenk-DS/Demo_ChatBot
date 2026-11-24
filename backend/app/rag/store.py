@@ -1,319 +1,272 @@
 """
-Vector store and local embedding module for the Real Estate AI Chatbot RAG system.
-Uses Ollama (nomic-embed-text) for embeddings and ChromaDB PersistentClient for storage.
+Vector Store Manager for EstateAI RAG using Amazon Bedrock Titan v2 and FAISS.
+Replaces ChromaDB and Ollama.
+Persists vectors and chunk metadata on EC2 local storage.
+Features:
+- Titan Embeddings v2 (amazon.titan-embed-text-v2:0, 1024 dimensions)
+- Persistent FAISS index on disk
+- Seamless NumPy cosine fallback if FAISS native DLL is constrained by local OS policy
+- Document SHA-256 fingerprinting to prevent redundant re-indexing
+- Controlled errors without placeholder zero vectors
 """
 
+import hashlib
 import json
 import logging
 import os
 from pathlib import Path
-import sys
 from typing import Any, Optional, Union
-import urllib.error
-import urllib.request
-import warnings
 
-warnings.filterwarnings("ignore", category=RuntimeWarning, module="opentelemetry")
+import numpy as np
 
-# Fallback for Windows Application Control blocking grpc._cython
+# Attempt FAISS import
 try:
-    from grpc._cython import cygrpc  # noqa: F401
-except Exception:
-    from unittest.mock import MagicMock
-    mock_grpc = MagicMock(__version__="1.63.2")
-    sys.modules.setdefault("grpc", mock_grpc)
-    sys.modules.setdefault("grpc._compression", mock_grpc)
-    sys.modules.setdefault("grpc._cython", mock_grpc)
+    import faiss
+    _HAS_FAISS = True
+except Exception as faiss_err:
+    faiss = None
+    _HAS_FAISS = False
 
-import chromadb
+from app.config import env
+from app.rag.chunker import chunk_documents
+from app.rag.loader import get_default_pdf_dir, load_pdf_documents
+from app.services.bedrock_service import BedrockService
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("estateai.vector_store")
 
-DEFAULT_COLLECTION_NAME: str = "real_estate_documents"
-DEFAULT_STRUCTURED_COLLECTION: str = "real_estate_documents_v3_structured"
-COLLECTION_V3_STRUCTURED: str = "real_estate_documents_v3_structured"
-DEFAULT_OLLAMA_MODEL: str = "nomic-embed-text"
-DEFAULT_OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"
-DEFAULT_TIMEOUT: int = 10
-
-_last_ollama_check_time: float = 0.0
-_is_ollama_available: Optional[bool] = None
+INDEX_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "faiss_index"
 
 
-def is_ollama_reachable(cache_ttl_seconds: float = 30.0) -> bool:
-    """Checks if local Ollama is reachable with a fast 1.0s timeout, cached for cache_ttl_seconds.
-    On Render or production deployments, immediately returns False without network attempts."""
-    global _last_ollama_check_time, _is_ollama_available
-    import time
+class FaissVectorStore:
+    def __init__(self, index_dir: Optional[Union[str, Path]] = None):
+        self.index_dir = Path(index_dir or env("VECTOR_STORE_PATH", str(INDEX_DIR)))
+        self.index_dir.mkdir(parents=True, exist_ok=True)
+        
+        self.index_file = self.index_dir / "index.faiss"
+        self.vectors_file = self.index_dir / "vectors.npy"
+        self.metadata_file = self.index_dir / "metadata.json"
+        self.fingerprints_file = self.index_dir / "fingerprints.json"
 
-    # Immediately disable Ollama when deployed on Render or in production
-    if os.getenv("RENDER") or os.getenv("RENDER_SERVICE_ID") or os.getenv("APP_ENV") == "production":
-        _is_ollama_available = False
-        return False
+        self.bedrock_service = BedrockService()
+        self.dimension = self.bedrock_service.embedding_dimensions
 
-    now = time.time()
-    if _is_ollama_available is not None and (now - _last_ollama_check_time) < cache_ttl_seconds:
-        return _is_ollama_available
+        self.index = None
+        self.vectors: list[list[float]] = []
+        self.chunks_metadata: list[dict[str, Any]] = []
+        self.fingerprints: dict[str, str] = {}
 
-    url = f"{get_ollama_base_url()}/api/tags"
-    try:
-        req = urllib.request.Request(url)
-        with urllib.request.urlopen(req, timeout=1.0) as resp:
-            _is_ollama_available = (resp.status == 200)
-    except Exception:
-        _is_ollama_available = False
+        self._load_from_disk()
 
-    _last_ollama_check_time = now
-    return _is_ollama_available
+    def _load_from_disk(self):
+        """Loads FAISS index or NumPy vectors and metadata from persistent storage."""
+        if self.metadata_file.exists():
+            try:
+                with open(self.metadata_file, "r", encoding="utf-8") as f:
+                    self.chunks_metadata = json.load(f)
+            except Exception as e:
+                logger.warning("Failed to load metadata.json: %s", e)
+                self.chunks_metadata = []
+
+        if self.fingerprints_file.exists():
+            try:
+                with open(self.fingerprints_file, "r", encoding="utf-8") as f:
+                    self.fingerprints = json.load(f)
+            except Exception as e:
+                logger.warning("Failed to load fingerprints.json: %s", e)
+                self.fingerprints = {}
+
+        # Load FAISS index if available
+        if _HAS_FAISS and self.index_file.exists():
+            try:
+                self.index = faiss.read_index(str(self.index_file))
+                logger.info("Loaded persistent FAISS index with %d vectors", self.index.ntotal)
+            except Exception as e:
+                logger.warning("Failed to read FAISS index file: %s", e)
+                self.index = None
+
+        # Load raw vectors array for NumPy fallback
+        if self.vectors_file.exists():
+            try:
+                arr = np.load(str(self.vectors_file))
+                self.vectors = arr.tolist()
+                logger.info("Loaded %d persistent vectors from disk", len(self.vectors))
+            except Exception as e:
+                logger.warning("Failed to read vectors.npy: %s", e)
+                self.vectors = []
+
+    def _save_to_disk(self):
+        """Persists index, vectors, metadata, and fingerprints to disk."""
+        try:
+            with open(self.metadata_file, "w", encoding="utf-8") as f:
+                json.dump(self.chunks_metadata, f, indent=2)
+
+            with open(self.fingerprints_file, "w", encoding="utf-8") as f:
+                json.dump(self.fingerprints, f, indent=2)
+
+            if self.vectors:
+                arr = np.array(self.vectors, dtype=np.float32)
+                np.save(str(self.vectors_file), arr)
+
+            if _HAS_FAISS and self.index is not None:
+                faiss.write_index(self.index, str(self.index_file))
+
+            logger.info("Saved vector index (%d items) to %s", len(self.chunks_metadata), self.index_dir)
+        except Exception as e:
+            logger.error("Failed to save vector store to disk: %s", e)
+
+    def is_document_indexed(self, filename: str, file_hash: str) -> bool:
+        """Checks if document has already been indexed with matching hash."""
+        return self.fingerprints.get(filename) == file_hash and len(self.chunks_metadata) > 0
+
+    def add_documents(self, documents: list[dict[str, Any]], filename: str, file_hash: str) -> int:
+        """
+        Chunks documents, generates Bedrock Titan v2 embeddings, and stores in vector index.
+        Returns number of chunks indexed.
+        """
+        if self.is_document_indexed(filename, file_hash):
+            logger.info("Document '%s' already indexed with fingerprint %s. Skipping duplicate embedding.", filename, file_hash[:8])
+            return 0
+
+        chunks = chunk_documents(documents)
+        if not chunks:
+            logger.warning("No text chunks generated for '%s'. Check document text extractability.", filename)
+            return 0
+
+        logger.info("Generating Amazon Bedrock Titan v2 embeddings for %d chunks in '%s'", len(chunks), filename)
+        new_vectors = []
+        new_metadata = []
+
+        for idx, chunk in enumerate(chunks):
+            text = chunk.get("text", "").strip()
+            if not text:
+                continue
+            
+            try:
+                embedding = self.bedrock_service.generate_embedding(text)
+                new_vectors.append(embedding)
+                
+                # Attach unique chunk ID and metadata
+                chunk["chunk_id"] = f"{filename}_{idx:04d}"
+                new_metadata.append(chunk)
+            except Exception as e:
+                logger.error("Failed to generate embedding for chunk %d of '%s': %s", idx, filename, e)
+                # Controlled error: do NOT generate zero vector placeholder
+                continue
+
+        if not new_vectors:
+            logger.error("Zero valid embeddings generated for '%s'. Index not updated.", filename)
+            return 0
+
+        # Update in-memory storage
+        self.vectors.extend(new_vectors)
+        self.chunks_metadata.extend(new_metadata)
+        self.fingerprints[filename] = file_hash
+
+        # Update FAISS index
+        if _HAS_FAISS:
+            arr = np.array(new_vectors, dtype=np.float32)
+            faiss.normalize_L2(arr)
+            if self.index is None:
+                self.index = faiss.IndexFlatIP(self.dimension)
+            self.index.add(arr)
+
+        self._save_to_disk()
+        logger.info("Successfully added %d chunks from '%s' to vector store", len(new_vectors), filename)
+        return len(new_vectors)
+
+    def search(self, query: str, top_k: int = 5) -> list[tuple[dict[str, Any], float]]:
+        """
+        Generates query embedding via Bedrock Titan v2 and searches vectors.
+        Returns list of (chunk_metadata, similarity_score).
+        """
+        if not self.chunks_metadata or not self.vectors:
+            logger.warning("Vector store is empty. No documents indexed.")
+            return []
+
+        try:
+            query_vec = self.bedrock_service.generate_embedding(query)
+        except Exception as e:
+            logger.error("Failed to generate query embedding: %s", e)
+            return []
+
+        # FAISS search if available
+        if _HAS_FAISS and self.index is not None and self.index.ntotal > 0:
+            q_arr = np.array([query_vec], dtype=np.float32)
+            faiss.normalize_L2(q_arr)
+            scores, indices = self.index.search(q_arr, min(top_k, self.index.ntotal))
+            
+            results = []
+            for score, idx in zip(scores[0], indices[0]):
+                if idx >= 0 and idx < len(self.chunks_metadata):
+                    results.append((self.chunks_metadata[idx], float(score)))
+            return results
+
+        # NumPy cosine similarity fallback
+        q_arr = np.array(query_vec, dtype=np.float32)
+        norm_q = np.linalg.norm(q_arr)
+        if norm_q > 0:
+            q_arr = q_arr / norm_q
+
+        v_arr = np.array(self.vectors, dtype=np.float32)
+        norms_v = np.linalg.norm(v_arr, axis=1, keepdims=True)
+        norms_v[norms_v == 0] = 1.0
+        v_arr_norm = v_arr / norms_v
+
+        sims = np.dot(v_arr_norm, q_arr)
+        ranked_indices = np.argsort(-sims)[:top_k]
+
+        results = []
+        for idx in ranked_indices:
+            results.append((self.chunks_metadata[idx], float(sims[idx])))
+        return results
+
+    def sync_all_pdfs(self, pdf_dir: Optional[Union[str, Path]] = None) -> int:
+        """
+        Inspects PDF directory, computes fingerprints, and indexes newly added or changed PDFs.
+        Returns total number of chunks added.
+        """
+        if not self.bedrock_service.has_credentials():
+            logger.info("Bedrock credentials not present locally. PDF embedding synchronization deferred.")
+            return 0
+
+        target_dir = Path(pdf_dir or get_default_pdf_dir())
+        if not target_dir.exists():
+            logger.warning("PDF directory '%s' does not exist", target_dir)
+            return 0
+
+        pdf_files = sorted(target_dir.glob("*.pdf"))
+        total_added = 0
+
+        # Load all documents once
+        all_docs = load_pdf_documents(target_dir)
+
+        for pdf_path in pdf_files:
+            try:
+                hasher = hashlib.sha256()
+                with open(pdf_path, "rb") as f:
+                    for chunk in iter(lambda: f.read(65536), b""):
+                        hasher.update(chunk)
+                file_hash = hasher.hexdigest()
+
+                if self.is_document_indexed(pdf_path.name, file_hash):
+                    continue
+
+                current_docs = [d for d in all_docs if d.get("source") == pdf_path.name]
+                if current_docs:
+                    added = self.add_documents(current_docs, pdf_path.name, file_hash)
+                    total_added += added
+
+            except Exception as e:
+                logger.error("Failed to sync PDF '%s': %s", pdf_path.name, e)
+
+        return total_added
 
 
-def get_default_chroma_dir() -> Path:
-    """Resolves default ChromaDB directory: <backend>/data/chroma_db."""
-    return Path(__file__).resolve().parent.parent.parent / "data" / "chroma_db"
+_GLOBAL_VECTOR_STORE: Optional[FaissVectorStore] = None
 
 
-def get_ollama_base_url() -> str:
-    """Returns Ollama base URL from environment or default."""
-    return os.getenv("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL).rstrip("/")
-
-
-def get_embedding_model() -> str:
-    """Returns Ollama embedding model name from environment or default."""
-    return os.getenv("OLLAMA_EMBED_MODEL", DEFAULT_OLLAMA_MODEL)
-
-
-def _post_ollama(endpoint: str, payload: dict, timeout: int = DEFAULT_TIMEOUT) -> dict:
-    """Internal helper to execute JSON POST requests to local Ollama API."""
-    url = f"{get_ollama_base_url()}{endpoint}"
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.URLError as e:
-        raise ConnectionError(
-            f"Ollama unavailable at {url}: {e.reason}. Ensure Ollama is running ('ollama serve')."
-        ) from e
-
-
-def check_ollama_status() -> dict[str, Any]:
-    """Checks if Ollama service is reachable and has the embedding model."""
-    status = {"reachable": False, "model_available": False, "version": None, "error": None}
-    try:
-        url = f"{get_ollama_base_url()}/api/tags"
-        with urllib.request.urlopen(urllib.request.Request(url), timeout=5) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            models = [m.get("name", "") for m in data.get("models", [])]
-            target = get_embedding_model()
-            status["reachable"] = True
-            status["model_available"] = any(m == target or m.startswith(f"{target}:") for m in models)
-    except Exception as e:
-        status["error"] = str(e)
-    return status
-
-
-def get_embedding(text: str, model: Optional[str] = None) -> list[float]:
-    """Generates a dense vector embedding for a single text using Ollama."""
-    if not text or not text.strip():
-        raise ValueError("Cannot generate embedding for empty text.")
-    if not is_ollama_reachable():
-        raise ConnectionError("Ollama service is not reachable on this host.")
-    data = _post_ollama("/api/embeddings", {"model": model or get_embedding_model(), "prompt": text})
-    emb = data.get("embedding")
-    if not emb:
-        raise RuntimeError("Ollama returned empty embedding.")
-    return emb
-
-
-def get_embeddings(texts: list[str], model: Optional[str] = None) -> list[list[float]]:
-    """Generates embeddings for multiple texts using batch or fallback sequential calls.
-    If Ollama is not reachable, provides 768-dim float placeholder vectors so documents are stored
-    in ChromaDB and immediately retrievable via Dynamic BM25 Okapi lexical search."""
-    if not texts:
-        return []
-    if not is_ollama_reachable():
-        logger.info("Ollama is not reachable: using 768-dim placeholder vectors for %d chunks (enables BM25 retrieval).", len(texts))
-        return [[0.0] * 768 for _ in texts]
-    target_model = model or get_embedding_model()
-    try:
-        data = _post_ollama("/api/embed", {"model": target_model, "input": texts})
-        if "embeddings" in data and len(data["embeddings"]) == len(texts):
-            return data["embeddings"]
-    except Exception:
-        pass
-    return [get_embedding(t, target_model) for t in texts]
-
-
-def get_vector_store(persist_dir: Optional[Union[str, Path]] = None) -> chromadb.PersistentClient:
-    """Initializes and returns a ChromaDB PersistentClient instance."""
-    path = Path(persist_dir).resolve() if persist_dir else get_default_chroma_dir()
-    path.mkdir(parents=True, exist_ok=True)
-    return chromadb.PersistentClient(path=str(path))
-
-
-def get_or_create_collection(
-    client: Optional[chromadb.PersistentClient] = None,
-    collection_name: str = DEFAULT_COLLECTION_NAME,
-    persist_dir: Optional[Union[str, Path]] = None,
-    metadata: Optional[dict[str, Any]] = None,
-) -> chromadb.Collection:
-    """Retrieves or creates a persistent ChromaDB collection."""
-    db_client = client or get_vector_store(persist_dir=persist_dir)
-    return db_client.get_or_create_collection(name=collection_name, metadata=metadata)
-
-
-def add_chunks(
-    chunks: list[dict[str, Any]],
-    client: Optional[chromadb.PersistentClient] = None,
-    collection: Optional[chromadb.Collection] = None,
-    collection_name: str = DEFAULT_COLLECTION_NAME,
-    persist_dir: Optional[Union[str, Path]] = None,
-    metadata: Optional[dict[str, Any]] = None,
-) -> dict[str, Any]:
-    """
-    Adds chunk documents and their embeddings into ChromaDB.
-    Deduplicates within the input batch and skips chunks already stored in ChromaDB.
-    """
-    coll = collection or get_or_create_collection(
-        client=client, collection_name=collection_name, persist_dir=persist_dir, metadata=metadata
-    )
-    if not chunks:
-        return {"total_submitted": 0, "new_added": 0, "skipped_duplicates": 0, "collection_count": coll.count()}
-
-    # 1. Deduplicate within the provided batch itself
-    seen: set[str] = set()
-    unique_batch: list[dict[str, Any]] = []
-    for c in chunks:
-        cid = c.get("chunk_id")
-        if cid and cid not in seen:
-            seen.add(cid)
-            unique_batch.append(c)
-
-    batch_dups = len(chunks) - len(unique_batch)
-
-    # 2. Check which chunks already exist in ChromaDB
-    existing = set(coll.get(ids=[c["chunk_id"] for c in unique_batch])["ids"])
-    to_add = [c for c in unique_batch if c["chunk_id"] not in existing]
-    skipped = batch_dups + (len(unique_batch) - len(to_add))
-
-    if not to_add:
-        logger.info("All %d submitted chunks are duplicates. Skipped.", len(chunks))
-        return {
-            "total_submitted": len(chunks),
-            "new_added": 0,
-            "skipped_duplicates": skipped,
-            "collection_count": coll.count(),
-        }
-
-    # 3. Generate embeddings and ingest
-    texts = [c["text"] for c in to_add]
-    ids = [c["chunk_id"] for c in to_add]
-    metadatas = []
-    for c in to_add:
-        m = {
-            "source": c.get("source", "unknown"),
-            "page": int(c.get("page", 1)),
-            "chunk_id": c["chunk_id"],
-            "char_count": len(c["text"]),
-        }
-        # Dynamically preserve any additional metadata fields (e.g. property_name, configuration, category)
-        for k, v in c.items():
-            if k not in ("text", "source", "page", "chunk_id", "char_count") and v is not None:
-                m[k] = v if isinstance(v, (int, float, bool)) else str(v)
-        metadatas.append(m)
-
-    embeddings = get_embeddings(texts)
-    coll.add(ids=ids, embeddings=embeddings, documents=texts, metadatas=metadatas)
-    logger.info("Added %d new chunk(s) to collection '%s'.", len(to_add), coll.name)
-
-    return {
-        "total_submitted": len(chunks),
-        "new_added": len(to_add),
-        "skipped_duplicates": skipped,
-        "collection_count": coll.count(),
-    }
-
-
-def get_collection_status(
-    client: Optional[Union[chromadb.PersistentClient, str]] = None,
-    collection_name: str = DEFAULT_COLLECTION_NAME,
-    persist_dir: Optional[Union[str, Path]] = None,
-) -> dict[str, Any]:
-    """Returns basic diagnostics of the ChromaDB collection."""
-    
-    if isinstance(client, str):
-        collection_name = client
-        client = None
-
-    path = Path(persist_dir).resolve() if persist_dir else get_default_chroma_dir()
-    db_client = client or get_vector_store(persist_dir=path)
-    coll = db_client.get_or_create_collection(name=collection_name)
-    return {
-        "collection_name": collection_name,
-        "record_count": coll.count(),
-        "persist_directory": str(path),
-        "directory_exists": path.exists(),
-    }
-
-
-def sync_pdf_documents(
-    collection_name: str = DEFAULT_STRUCTURED_COLLECTION,
-    client: Optional[chromadb.PersistentClient] = None,
-) -> dict[str, Any]:
-    """
-    Automatically detects any new or uningested PDF files in pdf/ directory and
-    ingests them into the specified ChromaDB collection with zero manual intervention.
-    """
-    from .loader import load_pdf_documents, get_default_pdf_dir
-    from .chunker import chunk_documents
-
-    pdf_dir = get_default_pdf_dir()
-    if not pdf_dir.exists():
-        return {"status": "no_pdf_dir", "new_added": 0}
-
-    db_client = client or get_vector_store()
-    coll = db_client.get_or_create_collection(name=collection_name, metadata={"hnsw:space": "cosine"})
-
-    # Check which PDF source files already exist in collection
-    existing_sources = set()
-    total_count = coll.count()
-    if total_count > 0:
-        existing_data = coll.get(include=["metadatas"])
-        for m in existing_data.get("metadatas", []):
-            if m and m.get("source"):
-                existing_sources.add(m["source"])
-
-    supported_patterns = ("*.pdf", "*.txt", "*.md")
-    disk_files = []
-    for pat in supported_patterns:
-        disk_files.extend([p.name for p in pdf_dir.glob(pat)])
-    missing_docs = [p for p in disk_files if p not in existing_sources]
-
-    if not missing_docs:
-        return {"status": "up_to_date", "new_added": 0, "collection_count": total_count}
-
-    logger.info("Detected %d new document(s) to ingest: %s", len(missing_docs), missing_docs)
-    all_docs = load_pdf_documents(pdf_dir=pdf_dir)
-    docs_to_ingest = [d for d in all_docs if d.get("source") in missing_docs]
-    chunks = chunk_documents(docs_to_ingest, structured=True)
-
-    result = add_chunks(
-        chunks=chunks,
-        client=db_client,
-        collection=coll,
-        collection_name=collection_name,
-    )
-    logger.info(
-        "Auto-sync ingested %d chunks from new PDF(s). Total collection count: %d",
-        result.get("new_added", 0),
-        coll.count(),
-    )
-    return {
-        "status": "ingested",
-        "new_sources": missing_pdfs,
-        "new_added": result.get("new_added", 0),
-        "collection_count": coll.count(),
-    }
+def get_vector_store() -> FaissVectorStore:
+    global _GLOBAL_VECTOR_STORE
+    if _GLOBAL_VECTOR_STORE is None:
+        _GLOBAL_VECTOR_STORE = FaissVectorStore()
+    return _GLOBAL_VECTOR_STORE

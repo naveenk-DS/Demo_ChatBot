@@ -101,17 +101,15 @@ export default function ConciergeWidget({
                         </div>
 
                         <div className="concierge-header-right">
-                            {/* Discreet Provider Selector for Client/CTO Demo */}
+                            {/* Discreet Provider Selector for AWS Bedrock */}
                             {setProvider && (
                                 <select
                                     className="concierge-provider-select"
                                     value={provider}
                                     onChange={(e) => setProvider(e.target.value)}
-                                    title="Select LLM Engine for Demo"
+                                    title="Active AI Engine"
                                 >
-                                    <option value="gemini">Gemini</option>
-                                    <option value="openai">GPT-4.1</option>
-                                    <option value="ollama">Ollama</option>
+                                    <option value="bedrock">Bedrock</option>
                                 </select>
                             )}
 

@@ -1,4 +1,4 @@
-# Secrets & credentials — NEVER commit these
+# Secrets & Credentials — NEVER commit these
 .env
 .env.*
 !.env.example
@@ -6,21 +6,33 @@
 *.key
 aws-credentials
 
-# Python
+# Python & Virtual Environments
 .venv/
+*/.venv/
 __pycache__/
+*/__pycache__/
+*/*/__pycache__/
 *.pyc
 *.pyo
+*.pyd
+*.log
+*.bak
 
-# Node
+# Node & Frontend Build Artifacts
 node_modules/
+frontend/node_modules/
 dist/
-.next/
+frontend/dist/
 
-# IDE
+# Persistent Indexes & Local Databases
+*.db
+backend/enquiries.db
+backend/data/chroma_db/
+backend/data/faiss_index/
+backend_backup_pre_refactor/
+
+# IDE & OS
 .vscode/
 .idea/
-
-# OS
 .DS_Store
 Thumbs.db

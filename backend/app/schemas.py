@@ -77,7 +77,7 @@ class SearchFilters(BaseModel):
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
     history: list[ChatMessage] = Field(default_factory=list)
-    provider: Literal["openai", "gemini", "ollama"] = "gemini"
+    provider: Literal["bedrock", "openai", "gemini", "ollama"] = "bedrock"
     filters: Optional[SearchFilters] = None
 
 

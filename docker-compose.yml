@@ -1,0 +1,28 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: estateai-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - BEDROCK_MODEL_ID=${BEDROCK_MODEL_ID:-anthropic.claude-3-5-sonnet-20241022-v2:0}
+      - BEDROCK_EMBEDDING_MODEL_ID=${BEDROCK_EMBEDDING_MODEL_ID:-amazon.titan-embed-text-v2:0}
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME:-}
+      - S3_DOCUMENT_PREFIX=${S3_DOCUMENT_PREFIX:-documents/}
+      - FAISS_INDEX_DIR=/app/data/faiss_index
+      - CORS_ORIGINS=http://localhost,http://localhost:5173,http://localhost:80
+      - ENABLE_ATHENA=false
+      - ENABLE_GLUE=false
+    volumes:
+      - faiss_data:/app/data/faiss_index
+      - doc_data:/app/data/documents
+
+volumes:
+  faiss_data:
+    driver: local
+  doc_data:
+    driver: local

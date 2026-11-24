@@ -28,7 +28,7 @@ const STORAGE_KEY = 'estateai_conversations_v1';
 
 export default function App() {
     const [provider, setProvider] = useState(() => {
-        return localStorage.getItem('estateai_provider') || 'gemini';
+        return localStorage.getItem('estateai_provider') || 'bedrock';
     });
     const [messages, setMessages] = useState([]);
     const [busy, setBusy] = useState(false);
@@ -76,7 +76,7 @@ export default function App() {
         setMessages(updatedMessages);
         setBusy(true);
 
-        const providerLabel = provider === 'gemini' ? 'Google Gemini' : (provider === 'openai' ? 'OpenAI GPT-4.1' : 'Ollama');
+        const providerLabel = provider === 'bedrock' ? 'Amazon Bedrock' : (provider === 'gemini' ? 'Google Gemini' : 'Amazon Bedrock');
         setBusyStatus(`Connecting to ${providerLabel}...`);
 
         const t1 = setTimeout(() => {
