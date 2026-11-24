@@ -19,6 +19,25 @@ logger = logging.getLogger("estateai.retriever")
 DEFAULT_TOP_K = 5
 RRF_K = 60  # Standard smoothing constant for Reciprocal Rank Fusion
 
+_CACHED_BM25: Optional["DynamicBM25"] = None
+_CACHED_VERSION: int = -1
+
+
+def invalidate_bm25_cache() -> None:
+    """Invalidates the cached BM25 index."""
+    global _CACHED_BM25, _CACHED_VERSION
+    _CACHED_BM25 = None
+    _CACHED_VERSION = -1
+
+
+def get_cached_bm25(chunks: list[dict[str, Any]], version: int) -> "DynamicBM25":
+    """Retrieves or builds cached BM25 index matching store version."""
+    global _CACHED_BM25, _CACHED_VERSION
+    if _CACHED_BM25 is None or _CACHED_VERSION != version:
+        _CACHED_BM25 = DynamicBM25(chunks)
+        _CACHED_VERSION = version
+    return _CACHED_BM25
+
 
 class DynamicBM25:
     """Lightweight in-memory BM25 index over chunk text."""
@@ -99,8 +118,9 @@ def hybrid_search(
     # 1. Vector Search via Bedrock Titan v2
     vector_results = store.search(query, top_k=top_k * 2)
 
-    # 2. BM25 Keyword Search
-    bm25 = DynamicBM25(all_chunks)
+    # 2. BM25 Keyword Search with caching
+    store_version = getattr(store, "version", len(all_chunks))
+    bm25 = get_cached_bm25(all_chunks, store_version)
     bm25_results = bm25.score(query, top_k=top_k * 2)
 
     # 3. Reciprocal Rank Fusion (RRF)
@@ -141,8 +161,10 @@ def hybrid_search(
         if len(final_chunks) >= top_k:
             break
 
-    # If metadata filtering was too restrictive, return top unfiltered
-    if not final_chunks and sorted_candidates:
+    # Strictly enforce filters: if user specified BHK or category filter, do NOT silently
+    # fall back to arbitrary unfiltered chunks (prevents hallucinating mismatched specifications).
+    has_filter = (bhk is not None) or bool(category)
+    if not final_chunks and not has_filter and sorted_candidates:
         for doc_idx, score in sorted_candidates[:top_k]:
             c_copy = dict(all_chunks[doc_idx])
             c_copy["relevance_score"] = round(score, 4)

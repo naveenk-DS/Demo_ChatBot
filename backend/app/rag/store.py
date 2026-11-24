@@ -54,6 +54,7 @@ class FaissVectorStore:
         self.vectors: list[list[float]] = []
         self.chunks_metadata: list[dict[str, Any]] = []
         self.fingerprints: dict[str, str] = {}
+        self.version: int = 0
 
         self._load_from_disk()
 
@@ -135,6 +136,7 @@ class FaissVectorStore:
         self.vectors = []
         self.chunks_metadata = []
         self.fingerprints = {}
+        self.version += 1
         if _HAS_FAISS:
             self.index = None
         for f in (self.metadata_file, self.fingerprints_file, self.vectors_file, self.index_file):
@@ -158,6 +160,7 @@ class FaissVectorStore:
         if not self.chunks_metadata:
             if filename in self.fingerprints:
                 del self.fingerprints[filename]
+                self.version += 1
                 self._save_to_disk()
             return 0
 
@@ -185,6 +188,8 @@ class FaissVectorStore:
         if filename in self.fingerprints:
             del self.fingerprints[filename]
 
+        self.version += 1
+
         # Reconstruct FAISS index cleanly if active
         if _HAS_FAISS:
             if self.vectors:
@@ -192,6 +197,7 @@ class FaissVectorStore:
                 faiss.normalize_L2(arr)
                 self.index = faiss.IndexFlatIP(self.dimension)
                 self.index.add(arr)
+                assert self.index.ntotal == len(self.chunks_metadata), f"FAISS ntotal ({self.index.ntotal}) != chunks ({len(self.chunks_metadata)})"
             else:
                 self.index = None
 
@@ -200,35 +206,30 @@ class FaissVectorStore:
 
     def update_document(self, documents: list[dict[str, Any]], filename: str, file_hash: str) -> int:
         """
-        Purges any existing chunks of filename first to prevent mixing old and new content,
-        then indexes the new document chunks.
+        Safely updates document using staged vector commit: generates new embeddings first,
+        and only purges old vectors if new embeddings succeed.
         """
-        self.remove_document(filename)
         return self.add_documents(documents, filename, file_hash)
 
     def add_documents(self, documents: list[dict[str, Any]], filename: str, file_hash: str) -> int:
         """
-        Chunks documents, generates Bedrock Titan v2 embeddings, and stores in vector index.
+        Chunks documents, generates Bedrock Titan v2 embeddings in a staged buffer,
+        and safely commits to vector index only upon full success.
+        Preserves existing index if embedding generation fails.
         Returns number of chunks indexed.
         """
         if self.is_document_indexed(filename, file_hash):
             logger.info("Document '%s' already indexed with fingerprint %s. Skipping duplicate embedding.", filename, file_hash[:8])
             return 0
 
-        # Purge any previous version with different hash
-        if filename in self.fingerprints:
-            self.remove_document(filename)
-
         chunks = chunk_documents(documents)
         if not chunks:
-            logger.warning("No text chunks generated for '%s'. Check document text extractability. Recording empty index.", filename)
-            self.fingerprints[filename] = file_hash
-            self._save_to_disk()
+            logger.warning("No text chunks generated for '%s'. Check document text extractability. Staged commit aborted.", filename)
             return 0
 
         logger.info("Generating Amazon Bedrock Titan v2 embeddings for %d chunks in '%s'", len(chunks), filename)
-        new_vectors = []
-        new_metadata = []
+        staged_vectors = []
+        staged_metadata = []
 
         for idx, chunk in enumerate(chunks):
             text = chunk.get("text", "").strip()
@@ -237,38 +238,51 @@ class FaissVectorStore:
             
             try:
                 embedding = self.bedrock_service.generate_embedding(text)
-                new_vectors.append(embedding)
+                staged_vectors.append(embedding)
                 
                 # Attach unique chunk ID and metadata
-                chunk["chunk_id"] = f"{filename}_{idx:04d}"
-                chunk["source"] = filename
-                new_metadata.append(chunk)
+                chunk_copy = dict(chunk)
+                chunk_copy["chunk_id"] = f"{filename}_{idx:04d}"
+                chunk_copy["source"] = filename
+                staged_metadata.append(chunk_copy)
             except Exception as e:
                 logger.error("Failed to generate embedding for chunk %d of '%s': %s", idx, filename, e)
                 continue
 
-        if not new_vectors:
-            logger.error("Zero valid embeddings generated for '%s'. Index not updated.", filename)
-            self.fingerprints[filename] = file_hash
-            self._save_to_disk()
+        if not staged_vectors:
+            logger.error("Zero valid embeddings generated for '%s'. Staged commit aborted; existing records preserved.", filename)
             return 0
 
-        # Update in-memory storage
-        self.vectors.extend(new_vectors)
-        self.chunks_metadata.extend(new_metadata)
+        # STAGED COMMIT: Now that new vectors and metadata are fully generated,
+        # safely remove any prior version of this document.
+        if filename in self.fingerprints or any(c.get("source") == filename for c in self.chunks_metadata):
+            logger.info("Replacing previous version of '%s' with staged vectors.", filename)
+            self.remove_document(filename)
+
+        # Commit staged vectors and metadata
+        self.vectors.extend(staged_vectors)
+        self.chunks_metadata.extend(staged_metadata)
         self.fingerprints[filename] = file_hash
+        self.version += 1
+
+        # Validate vector and metadata dimension alignment
+        assert len(self.vectors) == len(self.chunks_metadata), (
+            f"Vector dimension mismatch: {len(self.vectors)} vectors vs {len(self.chunks_metadata)} metadata chunks"
+        )
 
         # Update FAISS index
         if _HAS_FAISS:
-            arr = np.array(new_vectors, dtype=np.float32)
+            arr = np.array(self.vectors, dtype=np.float32)
             faiss.normalize_L2(arr)
-            if self.index is None:
-                self.index = faiss.IndexFlatIP(self.dimension)
+            self.index = faiss.IndexFlatIP(self.dimension)
             self.index.add(arr)
+            assert self.index.ntotal == len(self.chunks_metadata), (
+                f"FAISS index ntotal ({self.index.ntotal}) != chunks_metadata ({len(self.chunks_metadata)})"
+            )
 
         self._save_to_disk()
-        logger.info("Successfully added %d chunks from '%s' to vector store", len(new_vectors), filename)
-        return len(new_vectors)
+        logger.info("Successfully committed %d chunks from '%s' to vector store (total: %d)", len(staged_vectors), filename, len(self.chunks_metadata))
+        return len(staged_vectors)
 
     def search(self, query: str, top_k: int = 5) -> list[tuple[dict[str, Any], float]]:
         """

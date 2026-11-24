@@ -86,7 +86,11 @@ class BedrockService:
         self._has_credentials = None
 
     def has_credentials(self) -> bool:
-        """Returns True if valid AWS credentials or EC2 IAM role are discoverable."""
+        """
+        Returns True if valid AWS credentials or EC2 IAM role are discoverable.
+        Uses the standard boto3 credential provider chain (EC2 IAM profile, environment variables, ~/.aws).
+        Does not disable EC2 IMDS by default.
+        """
         if self._has_credentials is not None:
             return self._has_credentials
 
@@ -106,14 +110,22 @@ class BedrockService:
             self._has_credentials = True
             return True
 
-        # 4. Check if IMDS is enabled and reachable quickly
-        if not bool_env("AWS_EC2_METADATA_DISABLED", True):
+        # 4. Standard boto3 credential check (handles EC2 IAM instance profiles via IMDS)
+        # Defaults to False (enabled) so EC2 instance profiles work out of the box in production.
+        imds_disabled = bool_env("AWS_EC2_METADATA_DISABLED", False)
+        if not imds_disabled:
             try:
-                session = boto3.Session(region_name=self.region_name)
-                self._has_credentials = session.get_credentials() is not None
+                session_kwargs = {"region_name": self.region_name}
+                profile = env("AWS_PROFILE", "")
+                if profile and profile not in ("your-aws-profile-name", "realestate-demo"):
+                    session_kwargs["profile_name"] = profile
+
+                session = boto3.Session(**session_kwargs)
+                creds = session.get_credentials()
+                self._has_credentials = creds is not None
                 return self._has_credentials
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Boto3 credential resolution encountered: %s", exc)
 
         self._has_credentials = False
         return False

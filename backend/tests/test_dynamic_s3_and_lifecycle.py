@@ -528,6 +528,178 @@ class TestDynamicS3AndLifecycle(unittest.TestCase):
         except ImportError:
             pass
 
+    # 16. EC2 IAM Role credential detection
+    @patch("boto3.Session")
+    def test_ec2_iam_role_credential_detection(self, mock_session_cls):
+        """Verifies that BedrockService enables EC2 IMDS by default and detects credentials via Boto3 chain."""
+        # Mock session returning credentials
+        mock_creds = MagicMock()
+        mock_creds.access_key = "ASIA_MOCK_ACCESS_KEY"
+        mock_creds.secret_key = "MOCK_SECRET"
+        mock_creds.token = "MOCK_SESSION_TOKEN"
+
+        mock_session = MagicMock()
+        mock_session.get_credentials.return_value = mock_creds
+        mock_session_cls.return_value = mock_session
+
+        bedrock = BedrockService()
+        bedrock._has_credentials = None
+
+        with patch.dict(os.environ, {"AWS_EC2_METADATA_DISABLED": "false"}):
+            self.assertTrue(bedrock.has_credentials())
+
+    # 17. Document Registry RLock No Deadlock & Backup Recovery
+    def test_document_registry_rlock_no_deadlock_and_backup_recovery(self):
+        """
+        Verifies that DocumentRegistry uses re-entrant lock (no deadlock on remove/clear)
+        and successfully recovers from corruption via .bak file.
+        """
+        reg = DocumentRegistry(self.registry_file)
+        reg.register(
+            s3_key="documents/projects.csv",
+            filename="projects.csv",
+            file_type="csv",
+            fingerprint="abc12345",
+            status="indexed",
+            record_count=10,
+        )
+        self.assertEqual(len(reg.list_all()), 1)
+
+        # Ensure remove and clear do not deadlock
+        reg.remove("documents/projects.csv")
+        self.assertEqual(len(reg.list_all()), 0)
+
+        # Re-register and create corruption scenario
+        reg.register(
+            s3_key="documents/projects.csv",
+            filename="projects.csv",
+            file_type="csv",
+            fingerprint="abc12345",
+            status="indexed",
+            record_count=10,
+        )
+        reg.save()  # Creates registry.json and registry.json.bak
+
+        # Corrupt the main registry.json
+        with open(self.registry_file, "w", encoding="utf-8") as f:
+            f.write("{ corrupted json content !!!")
+
+        # Reload registry: should recover from .bak
+        recovered_reg = DocumentRegistry(self.registry_file)
+        self.assertEqual(len(recovered_reg.list_all()), 1)
+        self.assertIsNotNone(recovered_reg.get("documents/projects.csv"))
+
+    # 18. Canonical S3 Key Cache Path Collision Prevention
+    def test_canonical_s3_key_cache_path_no_collision(self):
+        """Verifies that different S3 keys with identical basenames map to distinct local cache paths."""
+        s3 = S3Service(bucket_name="test-bucket", prefix="", cache_dir=self.cache_dir)
+        path1 = s3.get_cache_path("properties/chennai/projects.csv")
+        path2 = s3.get_cache_path("archive/chennai/projects.csv")
+
+        self.assertNotEqual(path1, path2)
+        self.assertTrue(str(path1).endswith("projects.csv"))
+        self.assertTrue(str(path2).endswith("projects.csv"))
+
+    # 19. Atomic Download Partial File Cleanup on Failure
+    def test_atomic_download_partial_file_cleanup_on_failure(self):
+        """Verifies that if S3 download fails midway, .part temporary file is cleaned up."""
+        s3 = S3Service(bucket_name="test-bucket", prefix="documents/", cache_dir=self.cache_dir)
+        mock_client = MagicMock()
+        
+        def mock_download_failure(bucket, key, dest):
+            # Create a partial file during download
+            with open(dest, "wb") as f:
+                f.write(b"partial corrupted data")
+            raise Exception("Simulated connection timeout during S3 transfer")
+
+        mock_client.download_file.side_effect = mock_download_failure
+        s3._s3_client = mock_client
+
+        with self.assertRaises(Exception):
+            s3.download_document("documents/large_plan.pdf")
+
+        # Verify no .part file remains
+        part_files = list(self.cache_dir.glob("*.part"))
+        self.assertEqual(len(part_files), 0)
+
+    # 20. FAISS Staged Vector Commit Preserves Store on Embedding Failure
+    def test_faiss_staged_vector_commit_preserves_store(self):
+        """
+        Verifies that vector store staged commit preserves previous vectors when new embeddings fail,
+        and never marks failed embeddings as indexed.
+        """
+        store = FaissVectorStore(index_dir=self.vector_dir)
+        # Seed initial working state
+        store.chunks_metadata = [{"chunk_id": "c1", "text": "2BHK Living Room", "source": "spec.pdf"}]
+        store.vectors = [[0.2] * store.dimension]
+        store.fingerprints = {"spec.pdf": "original_hash"}
+        store._save_to_disk()
+
+        # Mock BedrockService failing to generate embeddings
+        mock_bedrock = MagicMock()
+        mock_bedrock.generate_embedding.side_effect = Exception("Bedrock ThrottlingException")
+        mock_bedrock.embedding_dimensions = store.dimension
+        store.bedrock_service = mock_bedrock
+
+        # Attempt to update document with new hash
+        new_docs = [{"text": "Updated 2BHK Master Bedroom", "source": "spec.pdf", "page": 1}]
+        added = store.add_documents(new_docs, filename="spec.pdf", file_hash="new_hash")
+
+        self.assertEqual(added, 0)
+        # Original fingerprint must be preserved
+        self.assertEqual(store.fingerprints.get("spec.pdf"), "original_hash")
+        # Original chunks must be preserved
+        self.assertEqual(len(store.chunks_metadata), 1)
+        self.assertEqual(len(store.vectors), 1)
+
+    # 21. Retriever Filter Strictness and BM25 Caching
+    def test_retriever_filter_strictness_and_bm25_caching(self):
+        """
+        Verifies that hybrid_search does NOT drop BHK filters when no match exists,
+        preventing hallucinations, and verifies BM25 index caching.
+        """
+        from app.rag.retriever import get_cached_bm25, invalidate_bm25_cache
+
+        store = FaissVectorStore(index_dir=self.vector_dir)
+        store.chunks_metadata = [
+            {"chunk_id": "c1", "text": "2BHK Luxury apartment with granite counters", "configuration": "2BHK", "source": "2bhk.pdf"},
+            {"chunk_id": "c2", "text": "3BHK Italian marble living room with terrace", "configuration": "3BHK", "source": "3bhk.pdf"},
+        ]
+        store.vectors = [[0.1] * store.dimension, [0.2] * store.dimension]
+        store.version = 1
+
+        invalidate_bm25_cache()
+        bm25_1 = get_cached_bm25(store.chunks_metadata, store.version)
+        bm25_2 = get_cached_bm25(store.chunks_metadata, store.version)
+        self.assertIs(bm25_1, bm25_2)  # Must be cached object
+
+        # Mock vector store in retriever
+        with patch("app.rag.retriever.get_vector_store", return_value=store):
+            # Query with 4BHK filter which does not exist in corpus
+            results = hybrid_search(query="marble flooring", top_k=5, bhk=4)
+            # Must return [] rather than dropping filter and returning 2BHK/3BHK!
+            self.assertEqual(len(results), 0)
+
+    # 22. Admin Key Dependency Validation
+    def test_admin_key_dependency(self):
+        """Verifies that require_admin_auth validates X-Admin-Key in production and when ADMIN_API_KEY is configured."""
+        from app.main import require_admin_auth
+        from fastapi import HTTPException
+
+        with patch.dict(os.environ, {"ADMIN_API_KEY": "secret-admin-123", "APP_ENV": "production"}):
+            # Missing key raises 401
+            with self.assertRaises(HTTPException) as cm:
+                require_admin_auth(x_admin_key=None)
+            self.assertEqual(cm.exception.status_code, 401)
+
+            # Incorrect key raises 401
+            with self.assertRaises(HTTPException) as cm:
+                require_admin_auth(x_admin_key="wrong-key")
+            self.assertEqual(cm.exception.status_code, 401)
+
+            # Correct key passes without raising
+            require_admin_auth(x_admin_key="secret-admin-123")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -29,14 +29,28 @@ class DocumentRegistry:
     def __init__(self, registry_file: Optional[Union[str, Path]] = None):
         self.registry_file = Path(registry_file or env("DOCUMENT_REGISTRY_PATH", str(DEFAULT_REGISTRY_PATH)))
         self.registry_file.parent.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.Lock()
+        # Use RLock (reentrant lock) to prevent deadlocks when methods call save() internally
+        self._lock = threading.RLock()
         self._registry: dict[str, dict[str, Any]] = {}
         self.load()
 
     def load(self) -> None:
-        """Loads the registry from disk."""
+        """
+        Loads the registry from disk.
+        If file is corrupted, preserves the corrupted file for recovery and attempts
+        to load from the backup file (.bak) rather than silently wiping data.
+        """
         with self._lock:
             if not self.registry_file.exists():
+                bak_file = self.registry_file.with_suffix(".json.bak")
+                if bak_file.exists():
+                    try:
+                        with open(bak_file, "r", encoding="utf-8") as bf:
+                            self._registry = json.load(bf)
+                        logger.warning("Recovered document registry from backup: %s", bak_file)
+                        return
+                    except Exception:
+                        pass
                 self._registry = {}
                 return
 
@@ -45,17 +59,48 @@ class DocumentRegistry:
                     data = json.load(f)
                     if isinstance(data, dict):
                         self._registry = data
+                        logger.info("Loaded document registry with %d entries from %s", len(self._registry), self.registry_file)
+                        return
                     else:
-                        self._registry = {}
-                logger.info("Loaded document registry with %d entries from %s", len(self._registry), self.registry_file)
+                        raise ValueError("Registry JSON root must be a dictionary.")
             except Exception as e:
-                logger.error("Failed to load document registry from %s: %s", self.registry_file, e)
+                logger.error("CORRUPTION DETECTED: Failed to parse document registry from %s: %s", self.registry_file, e)
+                # Preserve corrupted file
+                corrupt_file = self.registry_file.with_name(f"{self.registry_file.name}.corrupt_{int(datetime.now(timezone.utc).timestamp())}")
+                try:
+                    import shutil
+                    shutil.copy2(self.registry_file, corrupt_file)
+                    logger.warning("Preserved corrupted registry file to %s for recovery.", corrupt_file)
+                except Exception as copy_err:
+                    logger.error("Failed to preserve corrupted registry: %s", copy_err)
+
+                # Attempt recovery from backup (.bak)
+                bak_file = self.registry_file.with_suffix(".json.bak")
+                if bak_file.exists():
+                    try:
+                        with open(bak_file, "r", encoding="utf-8") as bf:
+                            self._registry = json.load(bf)
+                        logger.info("Successfully recovered %d registry entries from backup: %s", len(self._registry), bak_file)
+                        return
+                    except Exception as bak_err:
+                        logger.error("Failed to load from backup registry: %s", bak_err)
+
+                # Keep empty registry only if both primary and backup failed
                 self._registry = {}
 
     def save(self) -> None:
-        """Persists the registry to disk atomically."""
+        """Persists the registry to disk atomically with backup copy."""
         with self._lock:
             try:
+                # Maintain .bak backup of previous valid version
+                if self.registry_file.exists() and self._registry:
+                    bak_file = self.registry_file.with_suffix(".json.bak")
+                    try:
+                        import shutil
+                        shutil.copy2(self.registry_file, bak_file)
+                    except Exception as bak_err:
+                        logger.debug("Could not update registry backup: %s", bak_err)
+
                 temp_file = self.registry_file.with_suffix(".tmp")
                 with open(temp_file, "w", encoding="utf-8") as f:
                     json.dump(self._registry, f, indent=2, default=str)
@@ -107,6 +152,17 @@ class DocumentRegistry:
         self.save()
         return entry
 
+    register = register_or_update
+
+    def get_by_path(self, local_path: Union[str, Path]) -> Optional[dict[str, Any]]:
+        """Retrieves registry entry by cached local file path."""
+        p_str = str(Path(local_path).resolve())
+        with self._lock:
+            for entry in self._registry.values():
+                if entry.get("cached_path") and str(Path(entry["cached_path"]).resolve()) == p_str:
+                    return dict(entry)
+        return None
+
     def update_status(
         self,
         s3_key: str,
@@ -148,6 +204,8 @@ class DocumentRegistry:
         self.save()
         return entry
 
+    register = register_or_update
+
     def mark_deleted(self, s3_key: str) -> Optional[dict[str, Any]]:
         """Marks a document as deleted in the registry."""
         with self._lock:
@@ -165,6 +223,8 @@ class DocumentRegistry:
 
         self.save()
         return entry
+
+    register = register_or_update
 
     def remove(self, s3_key: str) -> bool:
         """Completely purges a document entry from the registry."""

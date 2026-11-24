@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -122,6 +122,22 @@ def _rag_to_details(rag_chunks: list[dict[str, Any]], query: str = "") -> list[s
     return raw_items[:12]
 
 
+def require_admin_auth(x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key")):
+    """
+    Enforces administrative key validation for document uploads and re-indexing.
+    If ADMIN_API_KEY is defined in environment, it must match.
+    In production mode, if ADMIN_API_KEY is not defined, admin endpoints require non-empty header.
+    """
+    admin_key = env("ADMIN_API_KEY", "")
+    is_prod = env("APP_ENV", "production").lower() in ("production", "prod")
+    if admin_key:
+        if not x_admin_key or x_admin_key != admin_key:
+            raise HTTPException(status_code=401, detail="Unauthorized: Invalid or missing X-Admin-Key header")
+    elif is_prod:
+        if not x_admin_key:
+            raise HTTPException(status_code=401, detail="Unauthorized: Administrative actions require X-Admin-Key in production")
+
+
 def sync_all_pipeline(force_rebuild: bool = False) -> dict[str, Any]:
     """
     Performs dynamic, incremental synchronization across Amazon S3, Document Registry,
@@ -134,7 +150,7 @@ def sync_all_pipeline(force_rebuild: bool = False) -> dict[str, Any]:
     - Incremental ingestion of new CSV, XLS, XLSX, JSON, and PDF files
     - Automatic removal of stale records and vector chunks when files are modified or deleted
     - Resilient recovery on EC2 restart
-    - Full rebuilding when force_rebuild=True
+    - Full rebuilding when force_rebuild=True with pre-validation of S3 accessibility
     """
     global VERIFIED_PROPERTIES
     s3_service = S3Service()
@@ -145,6 +161,14 @@ def sync_all_pipeline(force_rebuild: bool = False) -> dict[str, Any]:
 
     with acquire_indexing_lock(timeout_seconds=30.0):
         if force_rebuild:
+            # S3 failure safety: verify S3 is reachable and accessible BEFORE wiping local data
+            if s3_service.is_s3_configured():
+                try:
+                    s3_service.list_remote_documents()
+                except Exception as s3_err:
+                    logger.error("Force rebuild aborted: unable to access S3: %s", s3_err)
+                    raise S3AccessError(f"Cannot force rebuild: S3 access failure ({s3_err})") from s3_err
+
             logger.info("Executing full pipeline rebuild: purging structured records, vector index, and registry cache.")
             structured_store.clear()
             vector_store.clear_all()
@@ -184,7 +208,15 @@ def sync_all_pipeline(force_rebuild: bool = False) -> dict[str, Any]:
                     if bedrock.has_credentials():
                         pdf_docs = load_single_pdf(path)
                         chunk_count = vector_store.add_documents(pdf_docs, filename=filename, file_hash=f_hash)
-                        registry.update_status(filename, status="indexed", chunk_count=chunk_count, fingerprint=f_hash)
+                        if chunk_count > 0:
+                            registry.update_status(filename, status="indexed", chunk_count=chunk_count, fingerprint=f_hash)
+                        else:
+                            registry.update_status(
+                                filename,
+                                status="failed",
+                                fingerprint=f_hash,
+                                error_message="Zero valid embeddings generated",
+                            )
                     else:
                         registry.update_status(
                             filename,
@@ -207,14 +239,20 @@ def sync_all_pipeline(force_rebuild: bool = False) -> dict[str, Any]:
         VERIFIED_PROPERTIES = structured_store.get_all_records()
         logger.info("Sync pipeline complete. Verified properties: %d | Active documents: %d", len(VERIFIED_PROPERTIES), len(registry.list_active()))
 
+        failed_list = sync_manifest["failed"]
+        status = "success"
+        if failed_list:
+            status = "partial_success" if (sync_manifest["new"] or sync_manifest["modified"] or sync_manifest["unchanged"]) else "failed"
+
         return {
+            "status": status,
             "verified_properties": len(VERIFIED_PROPERTIES),
             "manifest": {
                 "new": [p.name for p in sync_manifest["new"]],
                 "modified": [p.name for p in sync_manifest["modified"]],
                 "deleted": sync_manifest["deleted"],
                 "unchanged": [p.name for p in sync_manifest["unchanged"]],
-                "failed": sync_manifest["failed"],
+                "failed": failed_list,
             },
         }
 
@@ -290,14 +328,23 @@ def health():
     registry = get_document_registry()
     active_docs = registry.list_active()
     vector_store = get_vector_store()
+    bedrock = BedrockService()
+    s3_service = S3Service()
+    bedrock_ready = bedrock.has_credentials()
+    s3_configured = s3_service.is_s3_configured()
+    system_ready = len(VERIFIED_PROPERTIES) > 0 or len(active_docs) > 0 or bedrock_ready
+
     return {
         "status": "ok",
+        "ready": system_ready,
         "service": "estateai-concierge-backend",
         "environment": env("APP_ENV", "production"),
         "aws": {
             "region": env("AWS_REGION", "ap-south-1"),
+            "bedrock_ready": bedrock_ready,
             "bedrock_chat_model": env("BEDROCK_MODEL_ID", env("BEDROCK_CHAT_MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0")),
             "bedrock_embedding_model": env("BEDROCK_EMBEDDING_MODEL_ID", "amazon.titan-embed-text-v2:0"),
+            "s3_configured": s3_configured,
             "s3_bucket": env("S3_BUCKET_NAME", ""),
         },
         "flags": {
@@ -313,13 +360,14 @@ def health():
 @app.get("/api/providers")
 def get_providers():
     """Returns available AI provider status (Amazon Bedrock)."""
+    bedrock = BedrockService()
     return {
         "status": "success",
         "active_provider": "bedrock",
         "providers": {
             "bedrock": {
                 "name": "Amazon Bedrock",
-                "available": True,
+                "available": bedrock.has_credentials(),
                 "chat_model": env("BEDROCK_CHAT_MODEL_ID", "anthropic.claude-3-sonnet-20240229-v1:0"),
                 "embedding_model": env("BEDROCK_EMBEDDING_MODEL_ID", "amazon.titan-embed-text-v2:0"),
             }
@@ -383,7 +431,7 @@ def list_documents():
     }
 
 
-@app.post("/api/documents/upload")
+@app.post("/api/documents/upload", dependencies=[Depends(require_admin_auth)])
 async def upload_document(request: Request, filename: Optional[str] = None):
     """Administrative upload for documents to S3 and automated re-indexing."""
     target_name = filename or request.headers.get("x-filename", "uploaded_doc.pdf")
@@ -424,7 +472,7 @@ async def upload_document(request: Request, filename: Optional[str] = None):
     }
 
 
-@app.post("/api/documents/reindex")
+@app.post("/api/documents/reindex", dependencies=[Depends(require_admin_auth)])
 def reindex_documents(force_rebuild: bool = False):
     """
     Manually triggers full document synchronization and allows full index rebuilds.
@@ -556,11 +604,23 @@ def chat(req: ChatRequest):
         matched_properties = search_properties(filters.model_dump(), VERIFIED_PROPERTIES, limit=5)
 
     # Retrieve relevant document chunks for specifications or questions
-    bhk_hint = filters.bhk or extract_bhk_config(query)
+    bhk_val: Optional[int] = None
+    if filters.bhk is not None:
+        try:
+            bhk_val = int(filters.bhk)
+        except (ValueError, TypeError):
+            pass
+    if bhk_val is None:
+        bhk_str = extract_bhk_config(query)
+        if bhk_str:
+            m = re.search(r"(\d+)", bhk_str)
+            if m:
+                bhk_val = int(m.group(1))
+
     retrieved_chunks = retrieve_relevant_chunks(
         query=query,
         top_k=5,
-        bhk=filters.bhk,
+        bhk=bhk_val,
     )
 
     # Attach verified RAG specification details to each property card

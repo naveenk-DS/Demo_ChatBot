@@ -77,6 +77,8 @@ class S3Service:
         b = self.bucket_name.strip()
         return bool(b and b not in ("your-property-bucket", "YOUR-ATHENA-RESULTS-BUCKET/", "none"))
 
+    is_s3_configured = is_configured
+
     def is_local_fallback_permitted(self) -> bool:
         """Determines if fallback to local cached documents is allowed."""
         if bool_env("ALLOW_LOCAL_FALLBACK", False):
@@ -155,6 +157,24 @@ class S3Service:
         logger.info("Discovered %d supported document(s) in s3://%s/%s across %d page(s)", len(discovered), self.bucket_name, self.prefix, pages_processed)
         return discovered, True
 
+    def get_cache_path(self, s3_key: str) -> Path:
+        """
+        Resolves a deterministic, collision-free local cache Path for an S3 object key.
+        Preserves relative folder structure under cache_dir to prevent collisions between
+        files with identical basenames in different S3 prefixes (e.g. properties/chennai/projects.csv
+        vs archive/chennai/projects.csv).
+        """
+        clean_key = s3_key.lstrip("/")
+        # If key starts with prefix, mirror path relative to prefix
+        rel_key = clean_key
+        norm_prefix = self.prefix.strip("/")
+        if norm_prefix and rel_key.startswith(norm_prefix):
+            rel_key = rel_key[len(norm_prefix):].lstrip("/")
+        
+        dest = self.cache_dir / rel_key
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        return dest
+
     def sync_documents_incremental(
         self,
         registry: Optional[DocumentRegistry] = None,
@@ -226,7 +246,7 @@ class S3Service:
         # 2. Process S3 documents (new, modified, unchanged)
         for key, meta in s3_docs.items():
             filename = meta["filename"]
-            local_path = self.cache_dir / filename
+            local_path = self.get_cache_path(key)
             s3_size = meta["size_bytes"]
             s3_last_mod = meta["last_modified"]
             file_type = meta["file_type"]
@@ -244,15 +264,25 @@ class S3Service:
                         continue
 
             if needs_download:
+                part_file = local_path.with_name(f".{local_path.name}.part_{os.getpid()}_{int(time.time()*1000)}")
                 try:
-                    logger.info("Downloading s3://%s/%s -> %s", self.bucket_name, key, local_path)
-                    client.download_file(self.bucket_name, key, str(local_path))
+                    logger.info("Safely downloading s3://%s/%s -> %s (staged at %s)", self.bucket_name, key, local_path, part_file.name)
+                    client.download_file(self.bucket_name, key, str(part_file))
+
+                    # Validate completed download
+                    if not part_file.exists() or part_file.stat().st_size == 0:
+                        raise IOError(f"Zero-byte download received for s3://{self.bucket_name}/{key}")
+                    if s3_size > 0 and part_file.stat().st_size != s3_size:
+                        raise IOError(f"Truncated download for {key}: expected {s3_size} bytes, got {part_file.stat().st_size}")
+
+                    # Atomic replacement into final cache location
+                    part_file.replace(local_path)
                     new_hash = self.compute_file_hash(local_path)
 
                     if not reg_entry or reg_entry.get("status") == "deleted":
                         reg.register_or_update(
                             s3_key=key,
-                            filename=filename,
+                            filename=key,
                             file_type=file_type,
                             fingerprint=new_hash,
                             size_bytes=s3_size,
@@ -263,7 +293,7 @@ class S3Service:
                     else:
                         reg.register_or_update(
                             s3_key=key,
-                            filename=filename,
+                            filename=key,
                             file_type=file_type,
                             fingerprint=new_hash,
                             size_bytes=s3_size,
@@ -273,10 +303,12 @@ class S3Service:
                         result["modified"].append(local_path)
 
                 except Exception as dl_err:
+                    if part_file.exists():
+                        part_file.unlink(missing_ok=True)
                     logger.error("Failed downloading s3://%s/%s: %s", self.bucket_name, key, dl_err)
                     reg.register_or_update(
                         s3_key=key,
-                        filename=filename,
+                        filename=key,
                         file_type=file_type,
                         fingerprint="",
                         size_bytes=s3_size,
