@@ -32,222 +32,222 @@ export function formatRatePerSqFt(price, sqft) {
 }
 
 /**
- * High-rise Apartment SVG Illustration
+ * High-rise Apartment SVG Illustration (Teal/Forest Theme)
  */
 export function ApartmentIllustration() {
     return (
         <svg viewBox="0 0 340 160" className="prop-ref-svg" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">
-            <rect width="340" height="160" fill="#1e293b" />
-            <circle cx="270" cy="36" r="22" fill="#60a5fa" opacity="0.4" />
-            <rect x="24" y="30" width="58" height="116" fill="#334155" />
+            <rect width="340" height="160" fill="#0F2422" />
+            <circle cx="270" cy="36" r="22" fill="#4BC2C5" opacity="0.3" />
+            <rect x="24" y="30" width="58" height="116" fill="#193B37" />
             {[40, 56, 72, 88, 104, 120].map((y) => (
                 <g key={y}>
-                    <rect x="33" y={y} width="16" height="10" fill="#94a3b8" opacity="0.85" />
-                    <rect x="56" y={y} width="16" height="10" fill="#94a3b8" opacity="0.85" />
+                    <rect x="33" y={y} width="16" height="10" fill="#91B7B1" opacity="0.8" />
+                    <rect x="56" y={y} width="16" height="10" fill="#91B7B1" opacity="0.8" />
                 </g>
             ))}
-            <rect x="110" y="10" width="70" height="136" fill="#2563eb" opacity="0.85" />
+            <rect x="110" y="10" width="70" height="136" fill="#14302C" stroke="#294B46" strokeWidth="1" />
             {[18, 34, 50, 66, 82, 98, 114, 130].map((y) => (
                 <g key={y}>
-                    <rect x="120" y={y} width="14" height="10" fill="#e2e8f0" />
-                    <rect x="138" y={y} width="14" height="10" fill="#e2e8f0" />
-                    <rect x="156" y={y} width="14" height="10" fill="#e2e8f0" />
+                    <rect x="120" y={y} width="14" height="10" fill="#4BC2C5" opacity="0.9" />
+                    <rect x="138" y={y} width="14" height="10" fill="#4BC2C5" opacity="0.9" />
+                    <rect x="156" y={y} width="14" height="10" fill="#4BC2C5" opacity="0.9" />
                 </g>
             ))}
-            <rect x="208" y="30" width="58" height="116" fill="#334155" />
+            <rect x="208" y="30" width="58" height="116" fill="#193B37" />
             {[40, 56, 72, 88, 104, 120].map((y) => (
                 <g key={y}>
-                    <rect x="217" y={y} width="16" height="10" fill="#94a3b8" opacity="0.85" />
-                    <rect x="240" y={y} width="16" height="10" fill="#94a3b8" opacity="0.85" />
+                    <rect x="217" y={y} width="16" height="10" fill="#91B7B1" opacity="0.8" />
+                    <rect x="240" y={y} width="16" height="10" fill="#91B7B1" opacity="0.8" />
                 </g>
             ))}
-            <rect x="0" y="146" width="340" height="14" fill="#0f172a" />
-            <circle cx="16" cy="146" r="14" fill="#059669" />
-            <circle cx="324" cy="146" r="14" fill="#059669" />
+            <rect x="0" y="146" width="340" height="14" fill="#071A18" />
+            <circle cx="16" cy="146" r="14" fill="#56D29B" />
+            <circle cx="324" cy="146" r="14" fill="#56D29B" />
         </svg>
     );
 }
 
 /**
- * Villa / Houses SVG Illustration
+ * Villa / Houses SVG Illustration (Teal/Forest Theme)
  */
 export function VillaIllustration() {
     return (
         <svg viewBox="0 0 340 160" className="prop-ref-svg" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">
-            <rect width="340" height="160" fill="#0f172a" />
-            <circle cx="270" cy="36" r="22" fill="#38bdf8" opacity="0.3" />
-            <path d="M 20 78 L 52 48 L 84 78 Z" fill="#1e293b" />
-            <rect x="26" y="78" width="52" height="68" fill="#334155" />
-            <rect x="34" y="88" width="14" height="18" fill="#cbd5e1" />
-            <rect x="56" y="88" width="14" height="18" fill="#cbd5e1" />
-            <rect x="46" y="118" width="12" height="28" fill="#2563eb" />
-            <path d="M 106 72 L 144 42 L 182 72 Z" fill="#1e3a8a" />
-            <rect x="114" y="72" width="60" height="74" fill="#2563eb" opacity="0.8" />
-            <rect x="124" y="82" width="16" height="20" fill="#f8fafc" />
-            <rect x="150" y="82" width="16" height="20" fill="#f8fafc" />
-            <rect x="138" y="116" width="12" height="30" fill="#0f172a" />
-            <path d="M 206 78 L 238 48 L 270 78 Z" fill="#1e293b" />
-            <rect x="212" y="78" width="52" height="68" fill="#334155" />
-            <rect x="220" y="88" width="14" height="18" fill="#cbd5e1" />
-            <rect x="242" y="88" width="14" height="18" fill="#cbd5e1" />
-            <rect x="232" y="118" width="12" height="28" fill="#2563eb" />
-            <rect x="0" y="146" width="340" height="14" fill="#020617" />
-            <circle cx="16" cy="146" r="14" fill="#059669" />
-            <circle cx="324" cy="146" r="14" fill="#059669" />
+            <rect width="340" height="160" fill="#071A18" />
+            <circle cx="270" cy="36" r="22" fill="#4BC2C5" opacity="0.3" />
+            <path d="M 20 78 L 52 48 L 84 78 Z" fill="#14302C" />
+            <rect x="26" y="78" width="52" height="68" fill="#193B37" />
+            <rect x="34" y="88" width="14" height="18" fill="#D6E4E2" />
+            <rect x="56" y="88" width="14" height="18" fill="#D6E4E2" />
+            <rect x="46" y="118" width="12" height="28" fill="#4BC2C5" />
+            <path d="M 106 72 L 144 42 L 182 72 Z" fill="#112825" />
+            <rect x="114" y="72" width="60" height="74" fill="#193B37" stroke="#294B46" strokeWidth="1" />
+            <rect x="124" y="82" width="16" height="20" fill="#F5F7F6" />
+            <rect x="150" y="82" width="16" height="20" fill="#F5F7F6" />
+            <rect x="138" y="116" width="12" height="30" fill="#071A18" />
+            <path d="M 206 78 L 238 48 L 270 78 Z" fill="#14302C" />
+            <rect x="212" y="78" width="52" height="68" fill="#193B37" />
+            <rect x="220" y="88" width="14" height="18" fill="#D6E4E2" />
+            <rect x="242" y="88" width="14" height="18" fill="#D6E4E2" />
+            <rect x="232" y="118" width="12" height="28" fill="#4BC2C5" />
+            <rect x="0" y="146" width="340" height="14" fill="#0B1D1B" />
+            <circle cx="16" cy="146" r="14" fill="#56D29B" />
+            <circle cx="324" cy="146" r="14" fill="#56D29B" />
         </svg>
     );
 }
 
 /**
- * Living Room Architectural SVG
+ * Living Room Architectural SVG (Teal/Forest Theme)
  */
 export function LivingRoomSvg() {
     return (
         <svg viewBox="0 0 200 130" className="prop-room-svg" xmlns="http://www.w3.org/2000/svg">
-            <rect width="200" height="130" fill="#0f172a" />
+            <rect width="200" height="130" fill="#071A18" />
             {/* Window with sunlight */}
-            <rect x="120" y="15" width="65" height="70" fill="#1e293b" stroke="#38bdf8" strokeWidth="1.5" />
-            <line x1="152" y1="15" x2="152" y2="85" stroke="#38bdf8" strokeWidth="1" />
-            <line x1="120" y1="50" x2="185" y2="50" stroke="#38bdf8" strokeWidth="1" />
+            <rect x="120" y="15" width="65" height="70" fill="#112825" stroke="#4BC2C5" strokeWidth="1.5" />
+            <line x1="152" y1="15" x2="152" y2="85" stroke="#4BC2C5" strokeWidth="1" />
+            <line x1="120" y1="50" x2="185" y2="50" stroke="#4BC2C5" strokeWidth="1" />
             {/* Sofa */}
-            <rect x="20" y="60" width="85" height="38" rx="6" fill="#2563eb" opacity="0.9" />
-            <rect x="25" y="52" width="75" height="18" rx="4" fill="#1d4ed8" />
-            <rect x="16" y="66" width="10" height="28" rx="3" fill="#1e40af" />
-            <rect x="99" y="66" width="10" height="28" rx="3" fill="#1e40af" />
+            <rect x="20" y="60" width="85" height="38" rx="6" fill="#193B37" stroke="#294B46" strokeWidth="1" />
+            <rect x="25" y="52" width="75" height="18" rx="4" fill="#14302C" />
+            <rect x="16" y="66" width="10" height="28" rx="3" fill="#0B1D1B" />
+            <rect x="99" y="66" width="10" height="28" rx="3" fill="#0B1D1B" />
             {/* Coffee Table */}
-            <rect x="42" y="102" width="46" height="14" rx="3" fill="#475569" />
+            <rect x="42" y="102" width="46" height="14" rx="3" fill="#294B46" />
             {/* Floor tile grid */}
-            <line x1="0" y1="118" x2="200" y2="118" stroke="#334155" strokeWidth="1" />
-            <circle cx="170" cy="100" r="12" fill="#059669" opacity="0.8" />
+            <line x1="0" y1="118" x2="200" y2="118" stroke="#193B37" strokeWidth="1" />
+            <circle cx="170" cy="100" r="12" fill="#56D29B" opacity="0.8" />
         </svg>
     );
 }
 
 /**
- * Kitchen Architectural SVG
+ * Kitchen Architectural SVG (Teal/Forest Theme)
  */
 export function KitchenSvg() {
     return (
         <svg viewBox="0 0 200 130" className="prop-room-svg" xmlns="http://www.w3.org/2000/svg">
-            <rect width="200" height="130" fill="#0f172a" />
+            <rect width="200" height="130" fill="#071A18" />
             {/* Upper Cabinets */}
-            <rect x="15" y="12" width="170" height="30" fill="#1e293b" stroke="#334155" strokeWidth="1" />
-            <line x1="72" y1="12" x2="72" y2="42" stroke="#334155" strokeWidth="1" />
-            <line x1="128" y1="12" x2="128" y2="42" stroke="#334155" strokeWidth="1" />
+            <rect x="15" y="12" width="170" height="30" fill="#112825" stroke="#294B46" strokeWidth="1" />
+            <line x1="72" y1="12" x2="72" y2="42" stroke="#294B46" strokeWidth="1" />
+            <line x1="128" y1="12" x2="128" y2="42" stroke="#294B46" strokeWidth="1" />
             {/* Countertop */}
-            <rect x="15" y="70" width="170" height="12" fill="#0284c7" />
+            <rect x="15" y="70" width="170" height="12" fill="#4BC2C5" />
             {/* Lower Cabinets */}
-            <rect x="15" y="82" width="170" height="40" fill="#1e293b" stroke="#334155" strokeWidth="1" />
-            <line x1="60" y1="82" x2="60" y2="122" stroke="#334155" strokeWidth="1" />
-            <line x1="110" y1="82" x2="110" y2="122" stroke="#334155" strokeWidth="1" />
-            <line x1="155" y1="82" x2="155" y2="122" stroke="#334155" strokeWidth="1" />
+            <rect x="15" y="82" width="170" height="40" fill="#193B37" stroke="#294B46" strokeWidth="1" />
+            <line x1="60" y1="82" x2="60" y2="122" stroke="#294B46" strokeWidth="1" />
+            <line x1="110" y1="82" x2="110" y2="122" stroke="#294B46" strokeWidth="1" />
+            <line x1="155" y1="82" x2="155" y2="122" stroke="#294B46" strokeWidth="1" />
             {/* Chimney / Hob */}
-            <rect x="80" y="42" width="40" height="14" fill="#475569" />
-            <circle cx="92" cy="66" r="4" fill="#ef4444" opacity="0.8" />
-            <circle cx="108" cy="66" r="4" fill="#ef4444" opacity="0.8" />
+            <rect x="80" y="42" width="40" height="14" fill="#294B46" />
+            <circle cx="92" cy="66" r="4" fill="#56D29B" opacity="0.9" />
+            <circle cx="108" cy="66" r="4" fill="#56D29B" opacity="0.9" />
         </svg>
     );
 }
 
 /**
- * Balcony Architectural SVG
+ * Balcony Architectural SVG (Teal/Forest Theme)
  */
 export function BalconySvg() {
     return (
         <svg viewBox="0 0 200 130" className="prop-room-svg" xmlns="http://www.w3.org/2000/svg">
-            <rect width="200" height="130" fill="#0a192f" />
+            <rect width="200" height="130" fill="#071A18" />
             {/* Sky gradient background */}
-            <rect x="0" y="0" width="200" height="75" fill="#172554" />
-            <circle cx="160" cy="28" r="14" fill="#38bdf8" opacity="0.5" />
+            <rect x="0" y="0" width="200" height="75" fill="#0F2422" />
+            <circle cx="160" cy="28" r="14" fill="#4BC2C5" opacity="0.4" />
             {/* Distant skyline */}
-            <rect x="20" y="38" width="20" height="37" fill="#1e3a8a" opacity="0.5" />
-            <rect x="45" y="24" width="25" height="51" fill="#1e3a8a" opacity="0.6" />
-            <rect x="75" y="34" width="20" height="41" fill="#1e3a8a" opacity="0.5" />
+            <rect x="20" y="38" width="20" height="37" fill="#193B37" opacity="0.6" />
+            <rect x="45" y="24" width="25" height="51" fill="#14302C" opacity="0.7" />
+            <rect x="75" y="34" width="20" height="41" fill="#193B37" opacity="0.6" />
             {/* Balcony Railing */}
-            <rect x="10" y="75" width="180" height="50" fill="#0f172a" />
-            <line x1="10" y1="75" x2="190" y2="75" stroke="#38bdf8" strokeWidth="2.5" />
-            <line x1="10" y1="95" x2="190" y2="95" stroke="#475569" strokeWidth="1.5" />
+            <rect x="10" y="75" width="180" height="50" fill="#0B1D1B" />
+            <line x1="10" y1="75" x2="190" y2="75" stroke="#4BC2C5" strokeWidth="2.5" />
+            <line x1="10" y1="95" x2="190" y2="95" stroke="#294B46" strokeWidth="1.5" />
             {[25, 45, 65, 85, 105, 125, 145, 165, 185].map((x) => (
-                <line key={x} x1={x} y1="75" x2={x} y2="125" stroke="#475569" strokeWidth="1" />
+                <line key={x} x1={x} y1="75" x2={x} y2="125" stroke="#294B46" strokeWidth="1" />
             ))}
             {/* Plant Pot */}
-            <circle cx="35" cy="115" r="8" fill="#10b981" />
+            <circle cx="35" cy="115" r="8" fill="#56D29B" />
         </svg>
     );
 }
 
 /**
- * Technical Floor Plan Blueprint SVG
+ * Technical Floor Plan Blueprint SVG (Teal/Forest Theme)
  */
 export function FloorPlanSvg({ bhk = 3 }) {
     return (
         <svg viewBox="0 0 320 200" className="prop-floorplan-svg" xmlns="http://www.w3.org/2000/svg">
-            <rect width="320" height="200" fill="#09131d" />
+            <rect width="320" height="200" fill="#071A18" />
             {/* Grid lines */}
             {[20, 40, 60, 80, 100, 120, 140, 160, 180].map((y) => (
-                <line key={y} x1="0" y1={y} x2="320" y2={y} stroke="#1e293b" strokeWidth="0.5" strokeDasharray="3 3" />
+                <line key={y} x1="0" y1={y} x2="320" y2={y} stroke="#14302C" strokeWidth="0.5" strokeDasharray="3 3" />
             ))}
             {[40, 80, 120, 160, 200, 240, 280].map((x) => (
-                <line key={x} x1={x} y1="0" x2={x} y2="200" stroke="#1e293b" strokeWidth="0.5" strokeDasharray="3 3" />
+                <line key={x} x1={x} y1="0" x2={x} y2="200" stroke="#14302C" strokeWidth="0.5" strokeDasharray="3 3" />
             ))}
             {/* Outer Wall Boundary */}
-            <rect x="25" y="20" width="270" height="160" fill="none" stroke="#2563eb" strokeWidth="3" />
+            <rect x="25" y="20" width="270" height="160" fill="none" stroke="#4BC2C5" strokeWidth="2.5" />
             
             {/* Living & Dining Area */}
-            <rect x="25" y="20" width="150" height="90" fill="#172554" opacity="0.35" stroke="#38bdf8" strokeWidth="1.5" />
-            <text x="50" y="55" fill="#ffffff" fontSize="11" fontWeight="700">LIVING & DINING</text>
-            <text x="50" y="70" fill="#38bdf8" fontSize="9.5">{bhk === 2 ? "12' x 24' 3\"" : (bhk === 4 ? "16' x 28'" : "25' 1\" x 15'")}</text>
+            <rect x="25" y="20" width="150" height="90" fill="#193B37" opacity="0.45" stroke="#294B46" strokeWidth="1.5" />
+            <text x="50" y="55" fill="#F5F7F6" fontSize="11" fontWeight="700">LIVING & DINING</text>
+            <text x="50" y="70" fill="#4BC2C5" fontSize="9.5">{bhk === 2 ? "12' x 24' 3\"" : (bhk === 4 ? "16' x 28'" : "25' 1\" x 15'")}</text>
 
             {/* Balcony */}
-            <rect x="25" y="110" width="80" height="40" fill="#1e293b" opacity="0.4" stroke="#38bdf8" strokeWidth="1.5" />
-            <text x="35" y="130" fill="#ffffff" fontSize="9" fontWeight="700">BALCONY</text>
-            <text x="35" y="142" fill="#94a3b8" fontSize="8.5">{bhk === 2 ? "4' 6\" WIDE" : "6' 0\" WIDE"}</text>
+            <rect x="25" y="110" width="80" height="40" fill="#14302C" opacity="0.4" stroke="#294B46" strokeWidth="1.5" />
+            <text x="35" y="130" fill="#F5F7F6" fontSize="9" fontWeight="700">BALCONY</text>
+            <text x="35" y="142" fill="#91B7B1" fontSize="8.5">{bhk === 2 ? "4' 6\" WIDE" : "6' 0\" WIDE"}</text>
 
             {/* Kitchen */}
-            <rect x="105" y="110" width="70" height="70" fill="#172554" opacity="0.2" stroke="#38bdf8" strokeWidth="1.5" />
-            <text x="115" y="138" fill="#ffffff" fontSize="9" fontWeight="700">KITCHEN</text>
-            <text x="115" y="152" fill="#38bdf8" fontSize="8.5">{bhk === 2 ? "8' 2\" x 14'" : "16' x 9'"}</text>
+            <rect x="105" y="110" width="70" height="70" fill="#193B37" opacity="0.3" stroke="#294B46" strokeWidth="1.5" />
+            <text x="115" y="138" fill="#F5F7F6" fontSize="9" fontWeight="700">KITCHEN</text>
+            <text x="115" y="152" fill="#4BC2C5" fontSize="8.5">{bhk === 2 ? "8' 2\" x 14'" : "16' x 9'"}</text>
 
             {/* Master Bedroom */}
-            <rect x="175" y="20" width="120" height="85" fill="#1e3a8a" opacity="0.35" stroke="#38bdf8" strokeWidth="1.5" />
-            <text x="185" y="52" fill="#ffffff" fontSize="10" fontWeight="700">MASTER BEDROOM</text>
-            <text x="185" y="67" fill="#38bdf8" fontSize="9">{bhk === 2 ? "11' 6\" x 14'" : (bhk === 4 ? "14' x 18'" : "11' x 18' 2\"")}</text>
+            <rect x="175" y="20" width="120" height="85" fill="#14302C" opacity="0.45" stroke="#294B46" strokeWidth="1.5" />
+            <text x="185" y="52" fill="#F5F7F6" fontSize="10" fontWeight="700">MASTER BEDROOM</text>
+            <text x="185" y="67" fill="#4BC2C5" fontSize="9">{bhk === 2 ? "11' 6\" x 14'" : (bhk === 4 ? "14' x 18'" : "11' x 18' 2\"")}</text>
 
             {/* Bedroom 2 */}
-            <rect x="175" y="105" width="120" height="75" fill="#1e293b" opacity="0.3" stroke="#38bdf8" strokeWidth="1.5" />
-            <text x="185" y="136" fill="#ffffff" fontSize="9.5" fontWeight="700">BEDROOM 2</text>
-            <text x="185" y="150" fill="#38bdf8" fontSize="8.5">{bhk === 2 ? "11' 1\" x 14' 2\"" : "13' x 14'"}</text>
+            <rect x="175" y="105" width="120" height="75" fill="#193B37" opacity="0.35" stroke="#294B46" strokeWidth="1.5" />
+            <text x="185" y="136" fill="#F5F7F6" fontSize="9.5" fontWeight="700">BEDROOM 2</text>
+            <text x="185" y="150" fill="#4BC2C5" fontSize="8.5">{bhk === 2 ? "11' 1\" x 14' 2\"" : "13' x 14'"}</text>
 
             {/* Compass Indicator */}
             <g transform="translate(280, 42)">
-                <circle cx="0" cy="0" r="10" fill="#0f172a" stroke="#38bdf8" strokeWidth="1" />
-                <path d="M 0 -8 L 3 0 L -3 0 Z" fill="#ef4444" />
-                <path d="M 0 8 L 3 0 L -3 0 Z" fill="#94a3b8" />
-                <text x="-3" y="-11" fill="#ef4444" fontSize="7" fontWeight="bold">N</text>
+                <circle cx="0" cy="0" r="10" fill="#0B1D1B" stroke="#4BC2C5" strokeWidth="1" />
+                <path d="M 0 -8 L 3 0 L -3 0 Z" fill="#56D29B" />
+                <path d="M 0 8 L 3 0 L -3 0 Z" fill="#91B7B1" />
+                <text x="-3" y="-11" fill="#56D29B" fontSize="7" fontWeight="bold">N</text>
             </g>
         </svg>
     );
 }
 
 /**
- * 360 Virtual Tour Simulation SVG
+ * 360 Virtual Tour Simulation SVG (Teal/Forest Theme)
  */
 export function VirtualTourSvg() {
     return (
         <svg viewBox="0 0 320 180" className="prop-floorplan-svg" xmlns="http://www.w3.org/2000/svg">
-            <rect width="320" height="180" fill="#09131d" />
+            <rect width="320" height="180" fill="#071A18" />
             {/* Horizon curvature */}
-            <path d="M 0 90 Q 160 50 320 90 L 320 180 L 0 180 Z" fill="#0f1f33" />
-            <path d="M 0 90 Q 160 130 320 90 L 320 0 L 0 0 Z" fill="#060c14" />
+            <path d="M 0 90 Q 160 50 320 90 L 320 180 L 0 180 Z" fill="#112825" />
+            <path d="M 0 90 Q 160 130 320 90 L 320 0 L 0 0 Z" fill="#0B1D1B" />
             {/* Panorama grid lines */}
-            <ellipse cx="160" cy="90" rx="140" ry="50" fill="none" stroke="#2563eb" strokeWidth="1.5" strokeDasharray="6 4" opacity="0.7" />
-            <circle cx="160" cy="90" r="32" fill="#2563eb" opacity="0.25" />
-            <circle cx="160" cy="90" r="22" fill="#2563eb" opacity="0.6" />
+            <ellipse cx="160" cy="90" rx="140" ry="50" fill="none" stroke="#4BC2C5" strokeWidth="1.5" strokeDasharray="6 4" opacity="0.7" />
+            <circle cx="160" cy="90" r="32" fill="#4BC2C5" opacity="0.2" />
+            <circle cx="160" cy="90" r="22" fill="#4BC2C5" opacity="0.5" />
             {/* 360 arrow icon */}
-            <path d="M 150 90 A 10 10 0 1 1 170 90" fill="none" stroke="#ffffff" strokeWidth="2.5" />
-            <polygon points="172,86 172,94 178,90" fill="#ffffff" />
-            <text x="160" y="145" textAnchor="middle" fill="#ffffff" fontSize="13" fontWeight="700">360° Interactive Tour Available</text>
-            <text x="160" y="162" textAnchor="middle" fill="#94a3b8" fontSize="10.5">Click Launch 360° Walkthrough to explore high-res panoramic view</text>
+            <path d="M 150 90 A 10 10 0 1 1 170 90" fill="none" stroke="#F5F7F6" strokeWidth="2.5" />
+            <polygon points="172,86 172,94 178,90" fill="#F5F7F6" />
+            <text x="160" y="145" textAnchor="middle" fill="#F5F7F6" fontSize="13" fontWeight="700">360° Interactive Tour Available</text>
+            <text x="160" y="162" textAnchor="middle" fill="#91B7B1" fontSize="10.5">Click Launch 360° Walkthrough to explore high-res panoramic view</text>
         </svg>
     );
 }
@@ -649,7 +649,7 @@ export default function PropertyDetailCard({
 
                     {/* Availability / Handover status */}
                     <div className="prop-ref-availability-line">
-                        Status: <strong style={{ color: '#10B981' }}>{availabilityStr}</strong>
+                        Status: <strong style={{ color: '#56D29B' }}>{availabilityStr}</strong>
                     </div>
 
                     {/* Full Description */}
@@ -824,7 +824,7 @@ export default function PropertyDetailCard({
                         <ul className="prop-ref-details-list">
                             {roomTiles.map((t) => (
                                 <li key={t.id} className="prop-ref-details-item">
-                                    <strong style={{ color: '#38bdf8' }}>{t.name}:</strong> {t.dimension} ({t.spec})
+                                    <strong style={{ color: '#4BC2C5' }}>{t.name}:</strong> {t.dimension} ({t.spec})
                                 </li>
                             ))}
                         </ul>
