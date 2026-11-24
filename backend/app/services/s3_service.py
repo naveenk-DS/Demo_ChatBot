@@ -1,8 +1,16 @@
 """
-S3 Service for EstateAI.
-Responsible for downloading structured and unstructured documents from Amazon S3,
-caching them locally on persistent EC2 storage, and managing document synchronization.
-Uses standard EC2 IAM instance role credentials by default.
+Dynamic S3 Service for EstateAI.
+Responsible for downloading structured (CSV, XLSX, JSON) and unstructured (PDF)
+documents from Amazon S3, discovering files dynamically via list_objects_v2 pagination,
+caching them on persistent EC2 storage, and managing incremental synchronization.
+
+Supports:
+- Unlimited documents (no hardcoded counts or limits)
+- S3 pagination via ContinuationToken
+- Safe ignoring of unsupported file formats
+- Fingerprint-based change detection (SHA-256)
+- S3 deletion detection
+- Seamless offline/local fallback
 """
 
 import hashlib
@@ -15,8 +23,11 @@ import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
 
 from app.config import env
+from app.services.document_registry import DocumentRegistry, get_document_registry
 
 logger = logging.getLogger("estateai.s3_service")
+
+SUPPORTED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".json", ".pdf"}
 
 
 class S3Service:
@@ -30,12 +41,12 @@ class S3Service:
         self.bucket_name = bucket_name or env("S3_BUCKET_NAME", "")
         self.prefix = prefix or env("S3_DOCUMENT_PREFIX", "documents/")
         self.region_name = region_name or env("AWS_REGION", "ap-south-1")
-        
+
         # Local document cache directory on EC2 storage
         default_cache = Path(__file__).resolve().parent.parent.parent / "data" / "documents"
         self.cache_dir = Path(cache_dir or env("DOCUMENT_CACHE_PATH", str(default_cache)))
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        
+
         self._s3_client = None
 
     def _get_client(self):
@@ -44,7 +55,6 @@ class S3Service:
             return self._s3_client
 
         session_kwargs = {"region_name": self.region_name}
-        # Only use explicit profile if configured and not placeholder
         profile = env("AWS_PROFILE", "")
         if profile and profile not in ("your-aws-profile-name", "realestate-demo"):
             session_kwargs["profile_name"] = profile
@@ -54,11 +64,12 @@ class S3Service:
         return self._s3_client
 
     def is_configured(self) -> bool:
-        """Returns True if bucket name is set and not placeholder."""
+        """Returns True if bucket name is set and not a placeholder."""
         b = self.bucket_name.strip()
-        return bool(b and b not in ("your-property-bucket", "YOUR-ATHENA-RESULTS-BUCKET/"))
+        return bool(b and b not in ("your-property-bucket", "YOUR-ATHENA-RESULTS-BUCKET/", "none"))
 
-    def compute_file_hash(self, file_path: Path) -> str:
+    @staticmethod
+    def compute_file_hash(file_path: Union[str, Path]) -> str:
         """Computes SHA-256 fingerprint of a local file."""
         hasher = hashlib.sha256()
         with open(file_path, "rb") as f:
@@ -66,72 +77,250 @@ class S3Service:
                 hasher.update(chunk)
         return hasher.hexdigest()
 
-    def sync_documents(self) -> list[Path]:
+    def list_s3_documents(self) -> dict[str, dict[str, Any]]:
         """
-        Synchronizes documents from S3 bucket into local EC2 cache.
-        Returns list of downloaded or existing cached file paths.
-        Falls back to local cache or repository documents if S3 is unavailable.
+        Lists all valid documents in S3 prefix using list_objects_v2 pagination.
+        Filters out directories and unsupported file types safely.
+        Returns a dict mapping s3_key -> metadata dict.
         """
-        downloaded_files: list[Path] = []
-
         if not self.is_configured():
-            logger.info("S3_BUCKET_NAME not configured or placeholder. Using local document directory: %s", self.cache_dir)
-            return self.get_cached_documents()
+            return {}
+
+        client = self._get_client()
+        paginator = client.get_paginator("list_objects_v2")
+        pages = paginator.paginate(Bucket=self.bucket_name, Prefix=self.prefix)
+
+        discovered: dict[str, dict[str, Any]] = {}
+
+        for page in pages:
+            contents = page.get("Contents", [])
+            for obj in contents:
+                key = obj.get("Key", "")
+                if not key or key.endswith("/"):
+                    continue
+
+                filename = Path(key).name
+                ext = Path(filename).suffix.lower()
+
+                # Safe format filter
+                if ext not in SUPPORTED_EXTENSIONS:
+                    logger.debug("Skipping unsupported S3 object: %s (ext: %s)", key, ext)
+                    continue
+
+                discovered[key] = {
+                    "s3_key": key,
+                    "filename": filename,
+                    "file_type": ext.lstrip("."),
+                    "size_bytes": obj.get("Size", 0),
+                    "last_modified": obj.get("LastModified", "").isoformat() if hasattr(obj.get("LastModified", ""), "isoformat") else str(obj.get("LastModified", "")),
+                    "etag": obj.get("ETag", "").strip('"'),
+                }
+
+        logger.info("Discovered %d supported document(s) in s3://%s/%s across all pages", len(discovered), self.bucket_name, self.prefix)
+        return discovered
+
+    def sync_documents_incremental(
+        self,
+        registry: Optional[DocumentRegistry] = None,
+    ) -> dict[str, list[Any]]:
+        """
+        Incrementally synchronizes S3 documents with local cache and DocumentRegistry.
+        Detects:
+        - new documents
+        - modified documents (content/fingerprint change)
+        - deleted documents (removed from S3)
+        - unchanged documents
+
+        Returns:
+            {
+                "new": [Path],
+                "modified": [Path],
+                "deleted": [str (s3_key or filename)],
+                "unchanged": [Path],
+                "failed": [str]
+            }
+        """
+        reg = registry or get_document_registry()
+        result: dict[str, list[Any]] = {
+            "new": [],
+            "modified": [],
+            "deleted": [],
+            "unchanged": [],
+            "failed": [],
+        }
+
+        # Offline / Local fallback mode
+        if not self.is_configured():
+            logger.info("S3 bucket not configured. Running incremental sync on local cache directory: %s", self.cache_dir)
+            return self._sync_local_cache(reg)
 
         try:
+            s3_docs = self.list_s3_documents()
             client = self._get_client()
-            logger.info("Listing objects in S3 bucket '%s' with prefix '%s'", self.bucket_name, self.prefix)
-            paginator = client.get_paginator("list_objects_v2")
-            pages = paginator.paginate(Bucket=self.bucket_name, Prefix=self.prefix)
 
-            for page in pages:
-                contents = page.get("Contents", [])
-                for obj in contents:
-                    key = obj.get("Key", "")
-                    if not key or key.endswith("/"):
-                        continue  # Skip folders
+            # 1. Detect deleted S3 files (previously active in registry, but no longer in S3)
+            active_entries = reg.list_active()
+            for entry in active_entries:
+                key = entry.get("s3_key")
+                # Only check keys that originated from S3 prefix
+                if key and key.startswith(self.prefix) and key not in s3_docs:
+                    logger.info("Detected deleted document from S3: %s", key)
+                    result["deleted"].append(key)
 
-                    filename = Path(key).name
-                    # Filter supported extensions
-                    ext = Path(filename).suffix.lower()
-                    if ext not in (".csv", ".xlsx", ".xls", ".json", ".pdf"):
-                        continue
+            # 2. Process S3 documents (new, modified, unchanged)
+            for key, meta in s3_docs.items():
+                filename = meta["filename"]
+                local_path = self.cache_dir / filename
+                s3_size = meta["size_bytes"]
+                s3_last_mod = meta["last_modified"]
+                file_type = meta["file_type"]
 
-                    local_dest = self.cache_dir / filename
-                    s3_etag = obj.get("ETag", "").strip('"')
+                reg_entry = reg.get(key)
+                needs_download = True
 
-                    # Download if file does not exist locally or size differs
-                    s3_size = obj.get("Size", 0)
-                    needs_download = True
-                    if local_dest.exists() and local_dest.stat().st_size == s3_size:
-                        needs_download = False
+                if local_path.exists():
+                    local_size = local_path.stat().st_size
+                    # Check if local file exists and matches size
+                    if local_size == s3_size:
+                        local_hash = self.compute_file_hash(local_path)
+                        if reg_entry and reg_entry.get("fingerprint") == local_hash and reg_entry.get("status") == "indexed":
+                            needs_download = False
+                            result["unchanged"].append(local_path)
+                            continue
 
-                    if needs_download:
-                        logger.info("Downloading s3://%s/%s -> %s", self.bucket_name, key, local_dest)
-                        client.download_file(self.bucket_name, key, str(local_dest))
+                if needs_download:
+                    try:
+                        logger.info("Downloading s3://%s/%s -> %s", self.bucket_name, key, local_path)
+                        client.download_file(self.bucket_name, key, str(local_path))
+                        new_hash = self.compute_file_hash(local_path)
 
-                    downloaded_files.append(local_dest)
+                        if not reg_entry or reg_entry.get("status") == "deleted":
+                            reg.register_or_update(
+                                s3_key=key,
+                                filename=filename,
+                                file_type=file_type,
+                                fingerprint=new_hash,
+                                size_bytes=s3_size,
+                                last_modified=s3_last_mod,
+                                status="pending",
+                            )
+                            result["new"].append(local_path)
+                        else:
+                            # Modified document
+                            reg.register_or_update(
+                                s3_key=key,
+                                filename=filename,
+                                file_type=file_type,
+                                fingerprint=new_hash,
+                                size_bytes=s3_size,
+                                last_modified=s3_last_mod,
+                                status="pending",
+                            )
+                            result["modified"].append(local_path)
+
+                    except Exception as dl_err:
+                        logger.error("Failed to download %s: %s", key, dl_err)
+                        reg.register_or_update(
+                            s3_key=key,
+                            filename=filename,
+                            file_type=file_type,
+                            fingerprint="",
+                            size_bytes=s3_size,
+                            last_modified=s3_last_mod,
+                            status="failed",
+                            error_message=str(dl_err),
+                        )
+                        result["failed"].append(key)
 
         except (ClientError, NoCredentialsError, Exception) as exc:
-            logger.warning(
-                "Unable to sync from S3 bucket '%s' (%s). Falling back to existing local documents.",
-                self.bucket_name,
-                exc,
-            )
-            return self.get_cached_documents()
+            logger.warning("Error communicating with S3 (%s). Falling back to local cache.", exc)
+            return self._sync_local_cache(reg)
 
-        return downloaded_files if downloaded_files else self.get_cached_documents()
+        return result
 
-    def get_cached_documents(self) -> list[Path]:
-        """Returns all supported document files present in the cache directory or pdf/ directory."""
-        candidates = []
-        # Check cache_dir
+    def _sync_local_cache(self, reg: DocumentRegistry) -> dict[str, list[Any]]:
+        """Syncs local cache when running without S3 connection."""
+        result: dict[str, list[Any]] = {
+            "new": [],
+            "modified": [],
+            "deleted": [],
+            "unchanged": [],
+            "failed": [],
+        }
+
+        # Gather local files from cache_dir and repo pdf/ fallback
+        local_files: dict[str, Path] = {}
         if self.cache_dir.exists():
             for f in self.cache_dir.iterdir():
-                if f.is_file() and f.suffix.lower() in (".csv", ".xlsx", ".xls", ".json", ".pdf"):
+                if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS:
+                    local_files[f.name] = f
+
+        repo_pdf = Path(__file__).resolve().parent.parent.parent.parent / "pdf"
+        if repo_pdf.exists() and repo_pdf.is_dir():
+            for f in repo_pdf.iterdir():
+                if f.is_file() and f.suffix.lower() == ".pdf" and f.name not in local_files:
+                    local_files[f.name] = f
+
+        # Detect deleted
+        active_entries = reg.list_active()
+        for entry in active_entries:
+            fname = entry.get("filename", "")
+            if fname and fname not in local_files:
+                logger.info("Detected locally deleted document: %s", fname)
+                result["deleted"].append(fname)
+
+        # Detect new / modified / unchanged
+        for fname, path in local_files.items():
+            try:
+                f_hash = self.compute_file_hash(path)
+                reg_entry = reg.get(fname)
+                f_type = path.suffix.lower().lstrip(".")
+                f_size = path.stat().st_size
+
+                if not reg_entry or reg_entry.get("status") == "deleted":
+                    reg.register_or_update(
+                        s3_key=f"local://{fname}",
+                        filename=fname,
+                        file_type=f_type,
+                        fingerprint=f_hash,
+                        size_bytes=f_size,
+                        status="pending",
+                    )
+                    result["new"].append(path)
+                elif reg_entry.get("fingerprint") != f_hash:
+                    reg.register_or_update(
+                        s3_key=reg_entry.get("s3_key", f"local://{fname}"),
+                        filename=fname,
+                        file_type=f_type,
+                        fingerprint=f_hash,
+                        size_bytes=f_size,
+                        status="pending",
+                    )
+                    result["modified"].append(path)
+                elif reg_entry.get("status") == "indexed":
+                    result["unchanged"].append(path)
+                else:
+                    result["new"].append(path)
+            except Exception as e:
+                logger.error("Error inspecting local file %s: %s", fname, e)
+                result["failed"].append(fname)
+
+        return result
+
+    def sync_documents(self) -> list[Path]:
+        """Backward-compatible method returning all active supported document paths."""
+        sync_res = self.sync_documents_incremental()
+        all_paths = set(sync_res["unchanged"] + sync_res["new"] + sync_res["modified"])
+        return sorted(list(all_paths), key=lambda p: p.name)
+
+    def get_cached_documents(self) -> list[Path]:
+        """Returns all supported document files present in cache directory or fallback."""
+        candidates = []
+        if self.cache_dir.exists():
+            for f in self.cache_dir.iterdir():
+                if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS:
                     candidates.append(f)
 
-        # Check repository pdf/ directory for initial fallback
         repo_pdf_dir = Path(__file__).resolve().parent.parent.parent.parent / "pdf"
         if repo_pdf_dir.exists() and repo_pdf_dir.is_dir():
             for f in repo_pdf_dir.iterdir():
@@ -155,4 +344,3 @@ class S3Service:
         except Exception as e:
             logger.error("Failed to upload %s to S3: %s", local_path, e)
             return False
-

@@ -26,3 +26,4 @@ volumes:
     driver: local
   doc_data:
     driver: local
+

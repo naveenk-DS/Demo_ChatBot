@@ -344,6 +344,7 @@ def normalize_records(raw_records: list[dict[str, Any]], source_name: str) -> li
             "description": "",
             "amenities": [],
             "image_url": None,
+            "_excel_sheet": raw.get("_excel_sheet"),
             "original_data": raw,
         }
 
@@ -461,3 +462,105 @@ def search_properties(
         results = relaxed
 
     return results[:limit]
+
+
+class StructuredDataStore:
+    """
+    Manages in-memory partitioned property records indexed by source document.
+    Allows dynamic document additions, updates, deletions, and searching without restarting.
+    """
+    def __init__(self):
+        self.records_by_source: dict[str, list[dict[str, Any]]] = {}
+
+    def add_or_update(
+        self,
+        file_input: Union[str, Path, bytes, io.BytesIO],
+        source_name: str,
+    ) -> int:
+        """
+        Parses, normalizes, validates, and stores property records for source_name.
+        Replaces any existing records previously ingested from the same source.
+        Returns the number of valid property records stored.
+        """
+        ext = Path(source_name).suffix.lower()
+        raw_records: list[dict[str, Any]] = []
+
+        if ext == ".csv":
+            raw_records = load_csv(file_input, source_name=source_name)
+        elif ext in (".xlsx", ".xls"):
+            raw_records = load_excel(file_input, source_name=source_name)
+        elif ext == ".json":
+            raw_records = load_json(file_input, source_name=source_name)
+        else:
+            logger.warning("Unsupported structured file format: %s", ext)
+            return 0
+
+        if not raw_records:
+            logger.warning("No records found in structured file '%s'", source_name)
+            self.records_by_source[source_name] = []
+            return 0
+
+        normalized = normalize_records(raw_records, source_name=source_name)
+        valid = validate_records(normalized)
+
+        # Attach default verified image if missing
+        for r in valid:
+            if not r.get("image_url"):
+                bhk_val = r.get("bhk", 2)
+                if bhk_val == 2:
+                    r["image_url"] = "/api/assets/images/Bedroom.jpg"
+                elif bhk_val == 3:
+                    r["image_url"] = "/api/assets/images/bedroom.jpg.2.jpg"
+                else:
+                    r["image_url"] = "/api/assets/images/Bathroom.jpg"
+
+        self.records_by_source[source_name] = valid
+        logger.info("StructuredDataStore updated: '%s' has %d valid records", source_name, len(valid))
+        return len(valid)
+
+    def remove(self, source_name: str) -> int:
+        """
+        Removes all property records associated with source_name.
+        Returns the number of records removed.
+        """
+        if source_name in self.records_by_source:
+            removed_count = len(self.records_by_source[source_name])
+            del self.records_by_source[source_name]
+            logger.info("StructuredDataStore removed '%s' (%d records purged)", source_name, removed_count)
+            return removed_count
+
+        # Also search case-insensitively or by stem
+        for k in list(self.records_by_source.keys()):
+            if k.lower() == source_name.lower() or Path(k).name.lower() == Path(source_name).name.lower():
+                removed_count = len(self.records_by_source[k])
+                del self.records_by_source[k]
+                logger.info("StructuredDataStore removed '%s' (%d records purged)", k, removed_count)
+                return removed_count
+
+        return 0
+
+    def get_all_records(self) -> list[dict[str, Any]]:
+        """Returns all active records flattened across all sources."""
+        all_recs = []
+        for records in self.records_by_source.values():
+            all_recs.extend(records)
+        return all_recs
+
+    def search(self, filters: dict[str, Any], limit: int = 5) -> list[dict[str, Any]]:
+        """Runs deterministic filtering across all active property records."""
+        return search_properties(filters, self.get_all_records(), limit=limit)
+
+    def clear(self) -> None:
+        """Clears all records."""
+        self.records_by_source.clear()
+
+
+_GLOBAL_STRUCTURED_STORE: Optional[StructuredDataStore] = None
+
+
+def get_structured_store() -> StructuredDataStore:
+    global _GLOBAL_STRUCTURED_STORE
+    if _GLOBAL_STRUCTURED_STORE is None:
+        _GLOBAL_STRUCTURED_STORE = StructuredDataStore()
+    return _GLOBAL_STRUCTURED_STORE
+

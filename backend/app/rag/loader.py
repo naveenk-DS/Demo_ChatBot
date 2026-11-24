@@ -101,31 +101,74 @@ def get_default_pdf_dir() -> Path:
     return Path(__file__).resolve().parent.parent.parent.parent / "pdf"
 
 
-def load_pdf_documents(pdf_dir: Optional[Union[str, Path]] = None) -> list[dict[str, Any]]:
+def load_single_pdf(file_path: Union[str, Path]) -> list[dict[str, Any]]:
     """
-    Loads and extracts text page-by-page from all PDF files in the target directory.
-
-    Args:
-        pdf_dir: Optional custom path to the directory containing PDF files.
-                 If omitted, dynamically resolves to the project's root 'pdf/' directory.
-
-    Returns:
-        List of dictionaries containing page-level content and metadata:
-        [
-            {
-                "source": "2BHK + 2T Model House Script - Casagrand Aquagrove.pdf",
-                "page": 1,
-                "text": "..."
-            },
-            ...
-        ]
-
+    Extracts text page-by-page and rich metadata from a single PDF file using PyMuPDF.
+    Returns empty list if file cannot be opened or contains no extractable text.
     """
     if fitz is None:
         raise ImportError(
             "PyMuPDF is not installed. Please install it using: python -m pip install pymupdf"
         )
 
+    path = Path(file_path)
+    if not path.exists():
+        logger.warning("PDF file not found: %s", path)
+        return []
+
+    documents: list[dict[str, Any]] = []
+    try:
+        with fitz.open(path) as doc:
+            page_count = len(doc)
+            if page_count == 0:
+                logger.warning("PDF '%s' has 0 pages", path.name)
+                return []
+
+            doc_first_text = doc.load_page(0).get_text("text").strip() if page_count > 0 else ""
+            doc_meta = extract_document_metadata(path, doc_first_text)
+            doc_prop_name = doc_meta["property_name"]
+            doc_config = doc_meta["configuration"]
+            doc_id = doc_meta["document_id"]
+            doc_type = doc_meta["document_type"]
+
+            extracted_pages = 0
+            for page_idx in range(page_count):
+                try:
+                    page = doc.load_page(page_idx)
+                    text = page.get_text("text").strip()
+                    if not text:
+                        continue
+
+                    page_meta = extract_document_metadata(path, text)
+                    prop_name = page_meta["property_name"]
+                    config = page_meta["configuration"]
+                    final_prop = prop_name if prop_name and prop_name != "Bathroom 2" else doc_prop_name
+                    final_config = config if config and config != "general" else doc_config
+
+                    documents.append({
+                        "source": path.name,
+                        "document_id": doc_id,
+                        "page": page_idx + 1,
+                        "text": text,
+                        "property_name": final_prop,
+                        "configuration": final_config,
+                        "document_type": doc_type,
+                    })
+                    extracted_pages += 1
+                except Exception as page_err:
+                    logger.warning("Error extracting page %d from '%s': %s", page_idx + 1, path.name, page_err)
+
+            logger.info("Extracted %d valid page(s) from '%s' (total pages in doc: %d)", extracted_pages, path.name, page_count)
+            return documents
+    except Exception as file_err:
+        logger.error("Failed to read PDF file '%s': %s", path.name, file_err)
+        return []
+
+
+def load_pdf_documents(pdf_dir: Optional[Union[str, Path]] = None) -> list[dict[str, Any]]:
+    """
+    Loads and extracts text page-by-page from all PDF files in the target directory.
+    """
     target_dir = Path(pdf_dir).resolve() if pdf_dir else get_default_pdf_dir()
 
     if not target_dir.exists():
@@ -152,7 +195,6 @@ def load_pdf_documents(pdf_dir: Optional[Union[str, Path]] = None) -> list[dict[
     for file_path in all_files:
         ext = file_path.suffix.lower()
         if ext in (".txt", ".md"):
-            logger.info("Processing text document: %s", file_path.name)
             try:
                 text_content = file_path.read_text(encoding="utf-8", errors="replace").strip()
                 if not text_content:
@@ -171,64 +213,8 @@ def load_pdf_documents(pdf_dir: Optional[Union[str, Path]] = None) -> list[dict[
                 logger.error("Failed to read text file '%s': %s", file_path.name, txt_err)
             continue
 
-        logger.info("Processing PDF: %s", file_path.name)
-        try:
-            with fitz.open(file_path) as doc:
-                page_count = len(doc)
-                extracted_pages = 0
-
-                # Extract document-level metadata from page 1 and filename
-                doc_first_text = doc.load_page(0).get_text("text").strip() if page_count > 0 else ""
-                doc_meta = extract_document_metadata(file_path, doc_first_text)
-                doc_prop_name = doc_meta["property_name"]
-                doc_config = doc_meta["configuration"]
-                doc_id = doc_meta["document_id"]
-                doc_type = doc_meta["document_type"]
-
-                for page_idx in range(page_count):
-                    try:
-                        page = doc.load_page(page_idx)
-                        text = page.get_text("text").strip()
-
-                        # Skip empty or whitespace-only pages
-                        if not text:
-                            continue
-
-                        # Inherit document-level metadata or specialize if page mentions distinct config
-                        page_meta = extract_document_metadata(file_path, text)
-                        prop_name = page_meta["property_name"]
-                        config = page_meta["configuration"]
-                        final_prop = prop_name if prop_name and prop_name != "Bathroom 2" else doc_prop_name
-                        final_config = config if config and config != "general" else doc_config
-
-                        documents.append({
-                            "source": file_path.name,
-                            "document_id": doc_id,
-                            "page": page_idx + 1,  # 1-indexed human-readable numbering
-                            "text": text,
-                            "property_name": final_prop,
-                            "configuration": final_config,
-                            "document_type": doc_type,
-                        })
-                        extracted_pages += 1
-                    except Exception as page_err:
-                        logger.warning(
-                            "Error extracting page %d from '%s': %s",
-                            page_idx + 1,
-                            file_path.name,
-                            page_err,
-                        )
-
-                logger.info(
-                    "Extracted %d valid page(s) from '%s' (total pages in doc: %d)",
-                    extracted_pages,
-                    file_path.name,
-                    page_count,
-                )
-
-        except Exception as file_err:
-            logger.error("Failed to read PDF file '%s': %s", file_path.name, file_err)
-            continue
+        docs = load_single_pdf(file_path)
+        documents.extend(docs)
 
     logger.info("Total extracted pages across all PDFs: %d", len(documents))
     return documents

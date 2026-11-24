@@ -158,3 +158,4 @@ docker compose up -d --build
   `tail -f /var/log/nginx/error.log`
 - **Re-index Documents / Refresh S3:**
   The server automatically verifies and pulls S3 updates on startup or when uploading via `/api/documents/upload`.
+

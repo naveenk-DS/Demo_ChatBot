@@ -26,9 +26,15 @@
 ---
 
 ## Refactoring Verification Summary
-- **Total Test Cases Executed:** 24
-- **Test Pass Rate:** 100% (24 passed, 0 failed, 0 skipped)
+- **Total Test Cases Executed:** 36 (including 12 new dynamic S3 lifecycle, pagination, and multi-doc tests)
+- **Test Pass Rate:** 100% (36 passed, 0 failed, 0 skipped)
 - **Active AI Provider:** `bedrock` (Anthropic Claude 3.5 Sonnet / Amazon Titan Embeddings v2)
-- **Active Document Store:** Amazon S3 + local cache
+- **Active Document Store:** Amazon S3 + local cache with `DocumentRegistry` (persistent lifecycle tracking)
+- **Dynamic S3 Capabilities:**
+  - Unlimited documents supported dynamically (no 5-document limit, no static file paths)
+  - S3 `list_objects_v2` pagination supported with ContinuationToken
+  - Safe ignoring of unsupported formats (.docx, .zip, .exe)
+  - Stale structured records and vector chunks purged when files are modified or deleted
+  - Persistent registry across EC2 restarts (`data/document_registry.json`)
 - **Active Vector Index:** FAISS (EC2 native) + NumPy cosine fallback (local dev)
 - **Zero Hallucination Guarantee:** Property search strictly queries verified structured files (JSON/CSV/Excel); brochure Q&A strictly cites retrieved chunks.

@@ -27,6 +27,8 @@ from app.rag.store import get_vector_store
 from app.schemas import ChatRequest, EnquiryRequest, SearchFilters
 from app.services.bedrock_service import BedrockService
 from app.services.s3_service import S3Service
+from app.services.document_registry import DocumentRegistry, get_document_registry
+from app.rag.loader import load_single_pdf
 from app.data_pipeline.structured import (
     load_csv,
     load_excel,
@@ -34,6 +36,8 @@ from app.data_pipeline.structured import (
     normalize_records,
     validate_records,
     search_properties,
+    StructuredDataStore,
+    get_structured_store,
 )
 
 logger = logging.getLogger("estateai.main")
@@ -117,62 +121,112 @@ def _rag_to_details(rag_chunks: list[dict[str, Any]], query: str = "") -> list[s
     return raw_items[:12]
 
 
-def load_all_structured_data() -> list[dict[str, Any]]:
-    """Loads and normalizes all structured property files from S3 or local cache."""
+def sync_all_pipeline(force_rebuild: bool = False) -> dict[str, Any]:
+    """
+    Performs dynamic, incremental synchronization across Amazon S3, Document Registry,
+    Structured Data Store, and FAISS Vector Store.
+    
+    Handles:
+    - Dynamic discovery of arbitrary number of documents via list_objects_v2 pagination
+    - Incremental ingestion of new CSV, XLSX, JSON, and PDF files
+    - Automatic removal of stale records and vector chunks when files are modified or deleted
+    - Resilient recovery on EC2 restart
+    """
+    global VERIFIED_PROPERTIES
     s3_service = S3Service()
-    docs = s3_service.sync_documents()
+    registry = get_document_registry()
+    structured_store = get_structured_store()
+    vector_store = get_vector_store()
+    bedrock = BedrockService()
 
-    all_normalized: list[dict[str, Any]] = []
+    logger.info("Executing incremental document synchronization pipeline...")
+    sync_manifest = s3_service.sync_documents_incremental(registry)
 
-    for path in docs:
+    # 1. Handle deleted documents (purge from structured store & FAISS)
+    for deleted_key in sync_manifest["deleted"]:
+        filename = Path(deleted_key).name
+        ext = Path(filename).suffix.lower()
+
+        if ext in (".csv", ".xlsx", ".xls", ".json"):
+            purged = structured_store.remove(filename)
+            logger.info("Purged %d structured record(s) for deleted file '%s'", purged, filename)
+        elif ext == ".pdf":
+            purged = vector_store.remove_document(filename)
+            logger.info("Purged %d vector chunk(s) for deleted PDF '%s'", purged, filename)
+
+        registry.mark_deleted(deleted_key)
+
+    # 2. Process newly added or modified documents
+    targets_to_process = sync_manifest["new"] + sync_manifest["modified"]
+    for path in targets_to_process:
         ext = path.suffix.lower()
-        records: list[dict[str, Any]] = []
+        filename = path.name
+        f_hash = s3_service.compute_file_hash(path)
 
-        if ext == ".csv":
-            records = load_csv(path, source_name=path.name)
-        elif ext in (".xlsx", ".xls"):
-            records = load_excel(path, source_name=path.name)
-        elif ext == ".json" and "image_registry" not in path.name:
-            records = load_json(path, source_name=path.name)
+        registry.update_status(filename, status="processing")
 
-        if records:
-            norm = normalize_records(records, source_name=path.name)
-            valid = validate_records(norm)
-            all_normalized.extend(valid)
+        try:
+            if ext in (".csv", ".xlsx", ".xls", ".json"):
+                count = structured_store.add_or_update(path, source_name=filename)
+                registry.update_status(filename, status="indexed", record_count=count, fingerprint=f_hash)
+            elif ext == ".pdf":
+                if bedrock.has_credentials():
+                    pdf_docs = load_single_pdf(path)
+                    chunk_count = vector_store.add_documents(pdf_docs, filename=filename, file_hash=f_hash)
+                    registry.update_status(filename, status="indexed", chunk_count=chunk_count, fingerprint=f_hash)
+                else:
+                    registry.update_status(
+                        filename,
+                        status="pending",
+                        fingerprint=f_hash,
+                        error_message="Bedrock credentials deferred on local environment",
+                    )
+        except Exception as proc_err:
+            logger.error("Failed processing document '%s': %s", filename, proc_err)
+            registry.update_status(filename, status="failed", error_message=str(proc_err))
 
-    # Attach verified default image if missing
-    for r in all_normalized:
-        if not r.get("image_url"):
-            bhk_val = r.get("bhk", 2)
-            if bhk_val == 2:
-                r["image_url"] = "/api/assets/images/Bedroom.jpg"
-            elif bhk_val == 3:
-                r["image_url"] = "/api/assets/images/bedroom.jpg.2.jpg"
-            else:
-                r["image_url"] = "/api/assets/images/Bathroom.jpg"
+    # 3. Ensure unchanged structured files are present in memory (e.g. after EC2 reboot)
+    for path in sync_manifest["unchanged"]:
+        ext = path.suffix.lower()
+        filename = path.name
+        if ext in (".csv", ".xlsx", ".xls", ".json"):
+            if filename not in structured_store.records_by_source:
+                structured_store.add_or_update(path, source_name=filename)
 
-    logger.info("Total verified structured properties loaded: %d", len(all_normalized))
-    return all_normalized
+    VERIFIED_PROPERTIES = structured_store.get_all_records()
+    logger.info("Sync pipeline complete. Verified properties: %d | Active documents: %d", len(VERIFIED_PROPERTIES), len(registry.list_active()))
+
+    return {
+        "verified_properties": len(VERIFIED_PROPERTIES),
+        "manifest": {
+            "new": [p.name for p in sync_manifest["new"]],
+            "modified": [p.name for p in sync_manifest["modified"]],
+            "deleted": sync_manifest["deleted"],
+            "unchanged": [p.name for p in sync_manifest["unchanged"]],
+            "failed": sync_manifest["failed"],
+        },
+    }
+
+
+def load_all_structured_data() -> list[dict[str, Any]]:
+    """Backward-compatible loader."""
+    sync_all_pipeline()
+    return VERIFIED_PROPERTIES
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application startup & background initialization."""
-    global VERIFIED_PROPERTIES
     logger.info("Initializing EstateAI Concierge platform...")
 
     # 1. Ingest local image assets
     ingest_image_assets()
 
-    # 2. Sync and load structured property datasets from S3 / cache
-    VERIFIED_PROPERTIES = load_all_structured_data()
-
-    # 3. Synchronize vector store index for PDFs (runs fingerprint check)
-    vector_store = get_vector_store()
+    # 2. Run dynamic incremental synchronization
     try:
-        vector_store.sync_all_pdfs()
+        sync_all_pipeline()
     except Exception as e:
-        logger.warning("PDF indexing deferred or completed with: %s", e)
+        logger.error("Initial synchronization failed: %s", e)
 
     yield
 
@@ -222,13 +276,16 @@ app.mount("/api/assets/images", StaticFiles(directory=str(assets_dir)), name="as
 @app.get("/health")
 def health():
     """System health check and AWS environment status."""
+    registry = get_document_registry()
+    active_docs = registry.list_active()
+    vector_store = get_vector_store()
     return {
         "status": "ok",
         "service": "estateai-concierge-backend",
         "environment": env("APP_ENV", "production"),
         "aws": {
             "region": env("AWS_REGION", "ap-south-1"),
-            "bedrock_chat_model": env("BEDROCK_CHAT_MODEL_ID", "anthropic.claude-3-sonnet-20240229-v1:0"),
+            "bedrock_chat_model": env("BEDROCK_MODEL_ID", env("BEDROCK_CHAT_MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0")),
             "bedrock_embedding_model": env("BEDROCK_EMBEDDING_MODEL_ID", "amazon.titan-embed-text-v2:0"),
             "s3_bucket": env("S3_BUCKET_NAME", ""),
         },
@@ -237,6 +294,8 @@ def health():
             "enable_glue": bool_env("ENABLE_GLUE", False),
         },
         "properties_loaded": len(VERIFIED_PROPERTIES),
+        "documents_registered": len(active_docs),
+        "vector_chunks_indexed": len(vector_store.chunks_metadata),
     }
 
 
@@ -288,29 +347,34 @@ def get_images(category: Optional[str] = None):
 
 @app.get("/api/documents")
 def list_documents():
-    """Lists indexed architectural documents and structured datasets."""
-    s3_service = S3Service()
-    cached = s3_service.get_cached_documents()
+    """Lists indexed architectural documents and structured datasets from persistent DocumentRegistry."""
+    registry = get_document_registry()
+    docs = registry.list_all()
     
-    docs_summary = []
-    for p in cached:
-        docs_summary.append({
-            "source": p.name,
-            "extension": p.suffix.lower(),
-            "size_bytes": p.stat().st_size if p.exists() else 0,
-        })
+    # If registry is fresh, populate fallback from cached documents
+    if not docs:
+        s3_service = S3Service()
+        cached = s3_service.get_cached_documents()
+        docs = [
+            {
+                "filename": p.name,
+                "file_type": p.suffix.lower().lstrip("."),
+                "size_bytes": p.stat().st_size if p.exists() else 0,
+                "status": "indexed",
+            }
+            for p in cached
+        ]
 
     return {
         "status": "success",
-        "count": len(docs_summary),
-        "documents": docs_summary,
+        "count": len(docs),
+        "documents": docs,
     }
 
 
 @app.post("/api/documents/upload")
 async def upload_document(request: Request, filename: Optional[str] = None):
     """Administrative upload for documents to S3 and automated re-indexing."""
-    # Sanitize and validate filename
     target_name = filename or request.headers.get("x-filename", "uploaded_doc.pdf")
     target_name = Path(target_name).name  # Prevent path traversal
     
@@ -330,20 +394,17 @@ async def upload_document(request: Request, filename: Optional[str] = None):
     # Upload to S3 if configured
     s3_service.upload_document(dest)
 
-    # Re-index if PDF
-    chunks_added = 0
-    if ext == ".pdf":
-        vector_store = get_vector_store()
-        chunks_added = vector_store.sync_all_pdfs(s3_service.cache_dir)
-    elif ext in (".csv", ".xlsx", ".json"):
-        global VERIFIED_PROPERTIES
-        VERIFIED_PROPERTIES = load_all_structured_data()
+    # Incrementally re-sync pipeline
+    sync_result = sync_all_pipeline()
+    registry = get_document_registry()
+    doc_entry = registry.get(target_name)
 
     return {
         "status": "success",
-        "message": "Document processed successfully",
+        "message": "Document processed and synchronized successfully",
         "filename": target_name,
-        "chunks_added": chunks_added,
+        "document": doc_entry,
+        "sync_summary": sync_result,
     }
 
 

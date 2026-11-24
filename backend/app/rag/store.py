@@ -116,7 +116,64 @@ class FaissVectorStore:
 
     def is_document_indexed(self, filename: str, file_hash: str) -> bool:
         """Checks if document has already been indexed with matching hash."""
-        return self.fingerprints.get(filename) == file_hash and len(self.chunks_metadata) > 0
+        return self.fingerprints.get(filename) == file_hash
+
+    def remove_document(self, filename: str) -> int:
+        """
+        Removes all chunks and vectors belonging to filename.
+        Reconstructs the FAISS index cleanly and updates persistent storage.
+        Returns the number of chunks removed.
+        """
+        if not self.chunks_metadata:
+            if filename in self.fingerprints:
+                del self.fingerprints[filename]
+                self._save_to_disk()
+            return 0
+
+        keep_indices = []
+        removed_count = 0
+
+        for idx, chunk in enumerate(self.chunks_metadata):
+            chunk_src = chunk.get("source", "")
+            chunk_doc_id = chunk.get("document_id", "")
+            if chunk_src == filename or chunk_src == Path(filename).name or chunk_doc_id == filename:
+                removed_count += 1
+            else:
+                keep_indices.append(idx)
+
+        if removed_count == 0 and filename not in self.fingerprints:
+            return 0
+
+        logger.info("Purging %d stale chunk(s) from vector store for '%s'", removed_count, filename)
+
+        # Retain only non-removed chunks and vectors
+        self.chunks_metadata = [self.chunks_metadata[i] for i in keep_indices]
+        if self.vectors:
+            self.vectors = [self.vectors[i] for i in keep_indices if i < len(self.vectors)]
+
+        if filename in self.fingerprints:
+            del self.fingerprints[filename]
+
+        # Reconstruct FAISS index cleanly if active
+        if _HAS_FAISS:
+            if self.vectors:
+                arr = np.array(self.vectors, dtype=np.float32)
+                faiss.normalize_L2(arr)
+                self.index = faiss.IndexFlatIP(self.dimension)
+                self.index.add(arr)
+            else:
+                self.index = None
+
+        self._save_to_disk()
+        return removed_count
+
+    def update_document(self, documents: list[dict[str, Any]], filename: str, file_hash: str) -> int:
+        """
+        Purges any existing chunks of filename first to prevent mixing old and new content,
+        then indexes the new document chunks.
+        """
+        self.remove_document(filename)
+        return self.add_documents(documents, filename, file_hash)
 
     def add_documents(self, documents: list[dict[str, Any]], filename: str, file_hash: str) -> int:
         """
@@ -127,9 +184,15 @@ class FaissVectorStore:
             logger.info("Document '%s' already indexed with fingerprint %s. Skipping duplicate embedding.", filename, file_hash[:8])
             return 0
 
+        # Purge any previous version with different hash
+        if filename in self.fingerprints:
+            self.remove_document(filename)
+
         chunks = chunk_documents(documents)
         if not chunks:
-            logger.warning("No text chunks generated for '%s'. Check document text extractability.", filename)
+            logger.warning("No text chunks generated for '%s'. Check document text extractability. Recording empty index.", filename)
+            self.fingerprints[filename] = file_hash
+            self._save_to_disk()
             return 0
 
         logger.info("Generating Amazon Bedrock Titan v2 embeddings for %d chunks in '%s'", len(chunks), filename)
@@ -147,14 +210,16 @@ class FaissVectorStore:
                 
                 # Attach unique chunk ID and metadata
                 chunk["chunk_id"] = f"{filename}_{idx:04d}"
+                chunk["source"] = filename
                 new_metadata.append(chunk)
             except Exception as e:
                 logger.error("Failed to generate embedding for chunk %d of '%s': %s", idx, filename, e)
-                # Controlled error: do NOT generate zero vector placeholder
                 continue
 
         if not new_vectors:
             logger.error("Zero valid embeddings generated for '%s'. Index not updated.", filename)
+            self.fingerprints[filename] = file_hash
+            self._save_to_disk()
             return 0
 
         # Update in-memory storage

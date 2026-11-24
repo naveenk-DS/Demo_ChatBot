@@ -55,8 +55,10 @@ The application has been refactored and architected for deployment on **Amazon W
 ## 2. Key Features
 
 - **Accurate Property Search:** No LLM hallucination of prices or availability. Natural language queries are extracted into structured filters (BHK, price ceiling, location, facing, etc.) and queried against verified catalog files.
+- **Dynamic & Expandable S3 Ingestion:** Ingests any number of supported documents (CSV, multi-sheet Excel `.xlsx`, nested JSON, and PDF) without code modifications. Features automatic S3 `list_objects_v2` pagination, fingerprint change detection (SHA-256), and safe ignoring of unsupported formats.
+- **Full Document Lifecycle & Stale Data Purge:** When documents are modified or replaced in S3, stale structured records and vector chunks are automatically purged before re-indexing. When files are deleted from S3, searchable records are safely removed.
+- **Persistent Document Registry:** Tracks S3 key, filename, file type, SHA-256 fingerprint, last modified timestamp, indexing status (`pending`, `processing`, `indexed`, `failed`), and chunk/record counts across EC2 restarts.
 - **Hybrid RAG for Brochures:** Documents are indexed using PyMuPDF and embedded with Amazon Titan Embeddings v2 into a FAISS index, combined with BM25 keyword scoring via Reciprocal Rank Fusion (RRF).
-- **Multi-Format Ingestion:** Ingests property listings directly from S3 or local files in CSV, multi-sheet Excel (`.xlsx`), and nested JSON formats.
 - **Enterprise Security:**
   - Zero hardcoded credentials; uses AWS EC2 IAM Instance Profiles.
   - Path traversal defense on image and document downloads.
@@ -162,10 +164,10 @@ real_estate_ai_demo/
 
 ## 5. Running the Test Suite
 
-Run the full automated test suite (24 tests covering structured data ingestion, PDF extraction, hybrid RAG, Bedrock fallback, and chat endpoints):
+Run the full automated test suite (36 tests covering dynamic S3 discovery, pagination, incremental sync, stale data purges, multi-sheet Excel, PDF extraction, hybrid RAG, Bedrock fallback, and chat endpoints):
 
 ```bash
-python -m unittest backend/tests/test_structured_pipeline.py backend/tests/test_pdf_rag.py backend/tests/test_integration_and_fallbacks.py backend/tests/test_chat_endpoints.py -v
+python -m unittest backend/tests/test_structured_pipeline.py backend/tests/test_pdf_rag.py backend/tests/test_integration_and_fallbacks.py backend/tests/test_chat_endpoints.py backend/tests/test_dynamic_s3_and_lifecycle.py -v
 ```
 
 ---
@@ -194,3 +196,4 @@ Quick summary:
 | `GET` | `/api/assets/images` | List available property image assets |
 | `GET` | `/api/assets/images/{filename}` | Serve specific property images |
 | `POST` | `/api/enquiries` | Save customer lead or contact enquiry |
+

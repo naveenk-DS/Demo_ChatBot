@@ -19,3 +19,4 @@ SyslogIdentifier=estateai-backend
 
 [Install]
 WantedBy=multi-user.target
+

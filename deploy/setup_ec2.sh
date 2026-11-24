@@ -47,3 +47,4 @@ echo " 8. sudo nginx -t && sudo systemctl restart nginx"
 echo " 9. sudo cp $APP_DIR/deploy/estateai.service /etc/systemd/system/"
 echo " 10. sudo systemctl daemon-reload && sudo systemctl enable --now estateai"
 echo "=========================================================="
+
