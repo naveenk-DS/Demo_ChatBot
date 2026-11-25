@@ -159,8 +159,10 @@ real_estate_ai_demo/
    ```ini
    APP_ENV=development
    AWS_REGION=ap-south-1
-   S3_BUCKET_NAME=cg-website-chatbot-data
-   S3_DOCUMENT_PREFIX=
+   S3_BUCKET_NAME=casa-chatbot
+   S3_DOCUMENT_PREFIX=brochures/
+   S3_STRUCTURED_DATA_PREFIX=Csv-data/
+   S3_ALLOWED_PROJECT_PREFIXES=Casamia/,Zodiac/,Highlin/,Suncity/,Aquagroue/
    BEDROCK_NOVA_MODEL_ID=amazon.nova-pro-v1:0
    BEDROCK_KNOWLEDGE_BASE_ID=YOUR_BEDROCK_KNOWLEDGE_BASE_ID
    BEDROCK_KB_SEARCH_TYPE=HYBRID
@@ -169,6 +171,21 @@ real_estate_ai_demo/
    ADMIN_API_KEY=dev-secret-key-123
    ```
    *(Note: When AWS credentials or Knowledge Base ID are not configured locally, the backend automatically uses deterministic rule-based query handling and local cached documents).*
+
+   **S3 Bucket & Folder Architecture (`casa-chatbot`):**
+   ```text
+   casa-chatbot/                       (S3 bucket)
+   │
+   ├── brochures/                      (Unstructured PDF brochures)
+   │   ├── Casamia/
+   │   ├── Zodiac/
+   │   ├── Highlin/
+   │   ├── Suncity/
+   │   └── Aquagroue/
+   │
+   └── Csv-data/                       (Shared structured CSV/XLSX/JSON datasets)
+       └── [chennai_premium_listings.csv, etc.]
+   ```
 
 3. **Run the backend:**
    ```bash
@@ -189,11 +206,11 @@ real_estate_ai_demo/
 
 ## 6. Running the Test Suite
 
-Run the full automated test suite (63 tests covering dynamic S3 discovery, project folder keys, Knowledge Base Retrieve API, HYBRID/SEMANTIC search types, production fail-closed protection, offline FAISS fallback, and chat endpoints):
+Run the full automated test suite (69 tests covering dynamic S3 discovery, project folder prefix filtering, multi-page pagination, Knowledge Base Retrieve API, HYBRID/SEMANTIC search types, production fail-closed protection, offline FAISS fallback, and chat endpoints):
 
 ```bash
 cd backend
-python -m unittest tests/test_structured_pipeline.py tests/test_pdf_rag.py tests/test_integration_and_fallbacks.py tests/test_chat_endpoints.py tests/test_dynamic_s3_and_lifecycle.py tests/test_bedrock_kb_retrieval.py -v
+python -m unittest tests/test_structured_pipeline.py tests/test_pdf_rag.py tests/test_integration_and_fallbacks.py tests/test_chat_endpoints.py tests/test_dynamic_s3_and_lifecycle.py tests/test_bedrock_kb_retrieval.py tests/test_s3_project_filtering.py -v
 ```
 
 ---

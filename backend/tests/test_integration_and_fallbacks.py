@@ -7,6 +7,7 @@ Verifies that:
 4. System remains 100% operational in disconnected/test environments.
 """
 
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -21,6 +22,20 @@ from app.services.bedrock_service import BedrockService
 
 
 class TestIntegrationAndFallbacks(unittest.TestCase):
+    def setUp(self):
+        self._orig_env = {
+            "ALLOW_LOCAL_FALLBACK": os.environ.get("ALLOW_LOCAL_FALLBACK"),
+            "APP_ENV": os.environ.get("APP_ENV"),
+        }
+        os.environ["ALLOW_LOCAL_FALLBACK"] = "true"
+        os.environ["APP_ENV"] = "test"
+
+    def tearDown(self):
+        for k, v in self._orig_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
     def test_athena_disabled_by_default(self):
         # Verification that Athena is disabled
         self.assertFalse(is_athena_enabled())

@@ -535,7 +535,11 @@ def health():
             "bedrock_kb_search_type": env("BEDROCK_KB_SEARCH_TYPE", "HYBRID"),
             "retrieval_mode": "knowledge_base" if kb_service.is_configured() else "local_faiss",
             "s3_configured": s3_configured,
-            "s3_bucket": env("S3_BUCKET_NAME", "cg-website-chatbot-data"),
+            "s3_bucket": env("S3_BUCKET_NAME", "casa-chatbot"),
+            "s3_document_prefix": s3_service.prefix,
+            "s3_structured_data_prefix": s3_service.structured_prefix,
+            "s3_allowed_project_prefixes": s3_service.allowed_project_prefixes,
+            "s3_brochure_prefixes": s3_service.brochure_prefixes,
         },
         "flags": {
             "enable_athena": bool_env("ENABLE_ATHENA", False),

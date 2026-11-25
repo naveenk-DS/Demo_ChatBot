@@ -15,6 +15,7 @@ Production Safety Rules:
 import hashlib
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any, Optional, Union
 
@@ -46,15 +47,50 @@ class S3Service:
         self,
         bucket_name: Optional[str] = None,
         prefix: Optional[str] = None,
+        structured_prefix: Optional[str] = None,
+        allowed_project_prefixes: Optional[Union[list[str], str]] = None,
         cache_dir: Optional[Union[str, Path]] = None,
         region_name: Optional[str] = None,
     ):
-        self.bucket_name = bucket_name or env("S3_BUCKET_NAME", "cg-website-chatbot-data")
-        # Configurable S3 prefix: default to empty string to allow scanning all project folders in cg-website-chatbot-data
+        if bucket_name is not None:
+            self.bucket_name = bucket_name
+        else:
+            self.bucket_name = env("S3_BUCKET_NAME", "casa-chatbot")
+
+        # Configurable S3 unstructured brochure prefix (e.g. 'brochures/')
         if prefix is not None:
             self.prefix = prefix
         else:
-            self.prefix = env("S3_DOCUMENT_PREFIX", "")
+            self.prefix = env("S3_DOCUMENT_PREFIX", "brochures/")
+
+        if self.prefix and not self.prefix.endswith("/"):
+            self.prefix = f"{self.prefix}/"
+
+        # Configurable S3 structured data prefix (e.g. 'Csv-data/')
+        if structured_prefix is not None:
+            self.structured_prefix = structured_prefix
+        elif prefix is not None and allowed_project_prefixes is None:
+            # Legacy single-prefix test mode (e.g. S3Service(prefix="documents/"))
+            self.structured_prefix = ""
+        else:
+            self.structured_prefix = env("S3_STRUCTURED_DATA_PREFIX", "Csv-data/")
+
+        if self.structured_prefix and not self.structured_prefix.endswith("/"):
+            self.structured_prefix = f"{self.structured_prefix}/"
+
+        # Configurable allowed project prefixes for brochures: S3_ALLOWED_PROJECT_PREFIXES
+        if allowed_project_prefixes is not None:
+            self.allowed_project_prefixes = self._parse_prefixes(allowed_project_prefixes)
+        elif prefix is not None:
+            # Caller explicitly specified a single prefix (e.g. in unit tests or specific prefix sync)
+            self.allowed_project_prefixes = []
+        else:
+            raw_allowed = env("S3_ALLOWED_PROJECT_PREFIXES", "Casamia/,Zodiac/,Highlin/,Suncity/,Aquagroue/")
+            self.allowed_project_prefixes = self._parse_prefixes(raw_allowed)
+
+        # Build combined brochure project prefixes: S3_DOCUMENT_PREFIX + project (e.g. brochures/Casamia/)
+        self.brochure_prefixes = self._build_brochure_prefixes(self.prefix, self.allowed_project_prefixes)
+
         self.region_name = region_name or env("AWS_REGION", "ap-south-1")
 
         # Local document cache directory on EC2 storage
@@ -63,6 +99,81 @@ class S3Service:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
         self._s3_client = None
+
+    @staticmethod
+    def _build_brochure_prefixes(doc_prefix: str, allowed_projects: list[str]) -> list[str]:
+        """
+        Combines the brochure document prefix (e.g. 'brochures/') with each allowed project prefix
+        (e.g. 'Casamia/'), producing normalized prefixes like 'brochures/Casamia/'.
+        Ensures bucket name is never prepended, and prevents double-prefixing.
+        """
+        if not allowed_projects:
+            return []
+
+        norm_doc = doc_prefix.replace("\\", "/").strip().lstrip("/")
+        if norm_doc and not norm_doc.endswith("/"):
+            norm_doc = f"{norm_doc}/"
+
+        combined: list[str] = []
+        for pfx in allowed_projects:
+            clean_proj = pfx.replace("\\", "/").strip().lstrip("/").rstrip("/") + "/"
+            if norm_doc and not clean_proj.startswith(norm_doc):
+                full = f"{norm_doc}{clean_proj}"
+            else:
+                full = clean_proj
+            if full not in combined:
+                combined.append(full)
+        return combined
+
+    @staticmethod
+    def _parse_prefixes(raw: Optional[Union[str, list[str], tuple, set]]) -> list[str]:
+        """
+        Parses a comma-separated string or sequence of S3 folder prefixes into a normalized list.
+        Ensures each non-empty folder prefix ends with '/' (e.g. 'Casamia/' instead of 'Casamia').
+        Safely ignores empty, invalid, or whitespace-only tokens.
+        """
+        if not raw:
+            return []
+
+        tokens: list[str] = []
+        if isinstance(raw, str):
+            tokens = [t.strip() for t in raw.split(",") if t.strip()]
+        elif isinstance(raw, (list, tuple, set)):
+            tokens = [str(t).strip() for t in raw if str(t).strip()]
+
+        normalized: list[str] = []
+        for token in tokens:
+            cleaned = token.replace("\\", "/").strip().strip("'\"")
+            if not cleaned:
+                continue
+            if not cleaned.endswith("/"):
+                cleaned = f"{cleaned}/"
+            if cleaned not in normalized:
+                normalized.append(cleaned)
+        return normalized
+
+    def _is_key_in_scope(self, key: str) -> bool:
+        """Determines if a document key falls within configured brochure project prefixes or structured data prefix."""
+        if not key:
+            return False
+
+        # 1. Brochure projects check (e.g. brochures/Casamia/...)
+        if self.brochure_prefixes:
+            if any(key.startswith(bp) for bp in self.brochure_prefixes):
+                return True
+        elif self.allowed_project_prefixes:
+            if any(key.startswith(pfx) for pfx in self.allowed_project_prefixes):
+                return True
+
+        # 2. Shared structured data check (e.g. Csv-data/...)
+        if self.structured_prefix and key.startswith(self.structured_prefix):
+            return True
+
+        # 3. Fallback for single prefix without allowed projects or structured prefix
+        if not self.brochure_prefixes and not self.structured_prefix:
+            return key.startswith(self.prefix)
+
+        return False
 
     def _get_client(self):
         """Initializes boto3 S3 client using standard credential provider chain (EC2 IAM role)."""
@@ -103,7 +214,8 @@ class S3Service:
 
     def list_s3_documents(self) -> tuple[dict[str, dict[str, Any]], bool]:
         """
-        Lists all valid documents in S3 prefix using list_objects_v2 pagination.
+        Lists all valid documents in configured brochure project folders (under S3_DOCUMENT_PREFIX)
+        and shared structured data folder (under S3_STRUCTURED_DATA_PREFIX) using list_objects_v2 pagination.
         Returns a tuple: (discovered_dict, is_complete).
         
         Raises:
@@ -116,34 +228,67 @@ class S3Service:
         discovered: dict[str, dict[str, Any]] = {}
         pages_processed = 0
 
+        # Build target prefixes to query
+        target_prefixes: list[str] = []
+        if self.brochure_prefixes:
+            target_prefixes.extend(self.brochure_prefixes)
+        elif self.prefix:
+            target_prefixes.append(self.prefix)
+
+        if self.structured_prefix and self.structured_prefix not in target_prefixes:
+            target_prefixes.append(self.structured_prefix)
+
+        if not target_prefixes:
+            target_prefixes = [""]
+
         try:
             client = self._get_client()
             paginator = client.get_paginator("list_objects_v2")
-            pages = paginator.paginate(Bucket=self.bucket_name, Prefix=self.prefix)
-            for page in pages:
-                pages_processed += 1
-                contents = page.get("Contents", [])
-                for obj in contents:
-                    key = obj.get("Key", "")
-                    if not key or key.endswith("/"):
-                        continue
 
-                    filename = Path(key).name
-                    ext = Path(filename).suffix.lower()
+            for pfx in target_prefixes:
+                pages = paginator.paginate(Bucket=self.bucket_name, Prefix=pfx)
+                for page in pages:
+                    pages_processed += 1
+                    contents = page.get("Contents", [])
+                    for obj in contents:
+                        key = obj.get("Key", "")
+                        if not key or key.endswith("/"):
+                            continue
 
-                    # Safe format filter
-                    if ext not in SUPPORTED_EXTENSIONS:
-                        logger.debug("Skipping unsupported S3 object: %s (ext: %s)", key, ext)
-                        continue
+                        ext = Path(key).suffix.lower()
 
-                    discovered[key] = {
-                        "s3_key": key,
-                        "filename": filename,
-                        "file_type": ext.lstrip("."),
-                        "size_bytes": obj.get("Size", 0),
-                        "last_modified": obj.get("LastModified", "").isoformat() if hasattr(obj.get("LastModified", ""), "isoformat") else str(obj.get("LastModified", "")),
-                        "etag": obj.get("ETag", "").strip('"'),
-                    }
+                        is_structured = bool(self.structured_prefix and key.startswith(self.structured_prefix))
+                        is_brochure = bool(self.brochure_prefixes and any(key.startswith(bp) for bp in self.brochure_prefixes))
+
+                        # Shared structured dataset from Csv-data/ (no project allowlist applied)
+                        if is_structured:
+                            if ext not in SUPPORTED_STRUCTURED_EXTENSIONS:
+                                logger.debug("Skipping non-structured S3 object in structured prefix: %s (ext: %s)", key, ext)
+                                continue
+
+                        # Unstructured brochure PDFs from allowed project folders (brochures/<Project>/)
+                        elif is_brochure:
+                            if ext not in SUPPORTED_UNSTRUCTURED_EXTENSIONS:
+                                logger.debug("Skipping non-PDF S3 object in brochure prefix: %s (ext: %s)", key, ext)
+                                continue
+
+                        # Backward compatibility mode for single-prefix or unpartitioned buckets
+                        else:
+                            if not self._is_key_in_scope(key):
+                                logger.debug("Skipping key outside allowed scope: %s", key)
+                                continue
+                            if ext not in SUPPORTED_EXTENSIONS:
+                                logger.debug("Skipping unsupported S3 object: %s (ext: %s)", key, ext)
+                                continue
+
+                        discovered[key] = {
+                            "s3_key": key,
+                            "filename": Path(key).name,
+                            "file_type": ext.lstrip("."),
+                            "size_bytes": obj.get("Size", 0),
+                            "last_modified": obj.get("LastModified", "").isoformat() if hasattr(obj.get("LastModified", ""), "isoformat") else str(obj.get("LastModified", "")),
+                            "etag": obj.get("ETag", "").strip('"'),
+                        }
 
         except ClientError as exc:
             code = exc.response.get("Error", {}).get("Code", "")
@@ -160,7 +305,13 @@ class S3Service:
                 raise S3PaginationError(f"Unexpected error during S3 pagination: {exc}") from exc
             raise S3AccessError(f"Failed to access S3: {exc}") from exc
 
-        logger.info("Discovered %d supported document(s) in s3://%s/%s across %d page(s)", len(discovered), self.bucket_name, self.prefix, pages_processed)
+        logger.info(
+            "Discovered %d supported document(s) in s3://%s across %d prefix(es) and %d page(s)",
+            len(discovered),
+            self.bucket_name,
+            len(target_prefixes),
+            pages_processed,
+        )
         return discovered, True
 
     list_remote_documents = list_s3_documents
@@ -168,18 +319,12 @@ class S3Service:
     def get_cache_path(self, s3_key: str) -> Path:
         """
         Resolves a deterministic, collision-free local cache Path for an S3 object key.
-        Preserves relative folder structure under cache_dir to prevent collisions between
-        files with identical basenames in different S3 prefixes (e.g. properties/chennai/projects.csv
-        vs archive/chennai/projects.csv).
+        Preserves relative folder structure under cache_dir to eliminate collision between
+        files with identical basenames in different S3 prefixes (e.g. brochures/Casamia/doc.pdf
+        vs Csv-data/doc.pdf).
         """
         clean_key = s3_key.lstrip("/")
-        # If key starts with prefix, mirror path relative to prefix
-        rel_key = clean_key
-        norm_prefix = self.prefix.strip("/")
-        if norm_prefix and rel_key.startswith(norm_prefix):
-            rel_key = rel_key[len(norm_prefix):].lstrip("/")
-        
-        dest = self.cache_dir / rel_key
+        dest = self.cache_dir / clean_key
         dest.parent.mkdir(parents=True, exist_ok=True)
         return dest
 
@@ -244,8 +389,8 @@ class S3Service:
             active_entries = reg.list_active()
             for entry in active_entries:
                 key = entry.get("s3_key")
-                # Only reconcile keys that originated from S3 prefix
-                if key and key.startswith(self.prefix) and key not in s3_docs:
+                # Only reconcile keys that originated from in-scope prefix or allowed project prefixes
+                if key and self._is_key_in_scope(key) and key not in s3_docs:
                     logger.info("Detected deleted document from S3 (full listing verified): %s", key)
                     result["deleted"].append(key)
         else:
@@ -424,13 +569,15 @@ class S3Service:
     def get_s3_key_for_path(self, local_path: Path) -> str:
         """
         Maps a local cached document Path to its canonical S3 object key.
-        Preserves subdirectory structures to prevent key/name collisions.
+        Preserves full S3 key identity without basename stripping or key corruption.
         """
         try:
             rel = local_path.resolve().relative_to(self.cache_dir.resolve()).as_posix()
-            prefix_clean = self.prefix.strip("/")
-            if prefix_clean:
-                return f"{prefix_clean}/{rel}"
+            if self._is_key_in_scope(rel):
+                return rel
+            if self.prefix and not rel.startswith(self.prefix.rstrip("/") + "/"):
+                if not any(rel.startswith(bp) for bp in self.brochure_prefixes) and not (self.structured_prefix and rel.startswith(self.structured_prefix)):
+                    return f"{self.prefix.rstrip('/')}/{rel}"
             return rel
         except ValueError:
             # File is outside cache_dir (e.g. fallback local directory)

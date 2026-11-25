@@ -21,8 +21,8 @@
         "s3:ListBucket"
       ],
       "Resource": [
-        "arn:aws:s3:::cg-website-chatbot-data",
-        "arn:aws:s3:::cg-website-chatbot-data/*"
+        "arn:aws:s3:::casa-chatbot",
+        "arn:aws:s3:::casa-chatbot/*"
       ],
       "Condition": {
         "StringEquals": {

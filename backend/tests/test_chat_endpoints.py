@@ -9,6 +9,7 @@ Verifies all FastAPI endpoint handlers:
 - get_images()
 """
 
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -33,8 +34,25 @@ from app.schemas import ChatRequest, EnquiryRequest
 class TestChatEndpoints(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        # Isolate test suite from local production environment
+        cls._orig_env = {
+            "ALLOW_LOCAL_FALLBACK": os.environ.get("ALLOW_LOCAL_FALLBACK"),
+            "APP_ENV": os.environ.get("APP_ENV"),
+            "S3_BUCKET_NAME": os.environ.get("S3_BUCKET_NAME"),
+        }
+        os.environ["ALLOW_LOCAL_FALLBACK"] = "true"
+        os.environ["APP_ENV"] = "test"
+        os.environ["S3_BUCKET_NAME"] = ""
         # Initialize verified properties catalog
         app.main.VERIFIED_PROPERTIES = load_all_structured_data()
+
+    @classmethod
+    def tearDownClass(cls):
+        for k, v in cls._orig_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
     def test_health_endpoint(self):
         data = health()

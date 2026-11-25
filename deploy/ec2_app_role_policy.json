@@ -37,8 +37,8 @@
         "s3:GetBucketLocation"
       ],
       "Resource": [
-        "arn:aws:s3:::cg-website-chatbot-data",
-        "arn:aws:s3:::cg-website-chatbot-data/*"
+        "arn:aws:s3:::casa-chatbot",
+        "arn:aws:s3:::casa-chatbot/*"
       ]
     }
   ]

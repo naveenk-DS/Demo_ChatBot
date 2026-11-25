@@ -137,8 +137,8 @@ class TestBedrockKnowledgeBaseIntegration(unittest.TestCase):
     # 6. Configurable S3 Prefix supporting project folder hierarchies
     def test_configurable_s3_prefix_project_folders(self):
         """Verifies that S3Service supports empty prefix for scanning multi-level project folders."""
-        s3 = S3Service(bucket_name="cg-website-chatbot-data", prefix="")
-        self.assertEqual(s3.bucket_name, "cg-website-chatbot-data")
+        s3 = S3Service(bucket_name="casa-chatbot", prefix="")
+        self.assertEqual(s3.bucket_name, "casa-chatbot")
         self.assertEqual(s3.prefix, "")
 
         # Verify key mapping with arbitrary nested project folders
