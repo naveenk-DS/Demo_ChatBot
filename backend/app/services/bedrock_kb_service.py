@@ -47,7 +47,10 @@ class BedrockKnowledgeBaseService:
         region_name: Optional[str] = None,
         search_type: Optional[str] = None,
     ):
-        self.kb_id = (kb_id or env("BEDROCK_KNOWLEDGE_BASE_ID", "")).strip()
+        self.kb_id = (kb_id or env("BEDROCK_KNOWLEDGE_BASE_ID", "")
+        if kb_id is None
+        else kb_id
+        ).strip()
         self.region_name = region_name or env("AWS_REGION", "ap-south-1")
         
         # Configure HYBRID vs SEMANTIC according to the selected KB vector-store capabilities
